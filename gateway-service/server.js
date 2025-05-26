@@ -1,8 +1,11 @@
 // gateway-service/server.js
 const express = require('express');
-const { createProxyMiddleware } = require('http-proxy-middleware');
 const path = require('path');
 const cors = require('cors');
+require('dotenv').config();
+
+// Import our intelligent routing system
+const GatewayRoutes = require('./routes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,38 +22,18 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key']
 }));
 
-// Service URLs configuration
-const SERVICES = {
-  auth: process.env.AUTH_SERVICE_URL || 'http://localhost:3001',
-  comments: process.env.COMMENT_SERVICE_URL || 'http://localhost:3002',
-  industries: process.env.INDUSTRY_SERVICE_URL || 'http://localhost:3003',
-  nps: process.env.NPS_SERVICE_URL || 'http://localhost:3004'
-};
-
-console.log('🚀 Gateway starting with service configuration:');
-Object.entries(SERVICES).forEach(([service, url]) => {
-  console.log(`  ${service}: ${url}`);
+// Request logging middleware
+app.use((req, res, next) => {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] ${req.method} ${req.url} - ${req.ip}`);
+  next();
 });
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    services: SERVICES,
-    version: process.env.npm_package_version || '1.0.0',
-    uptime: process.uptime()
-  });
-});
+// Initialize intelligent gateway routing
+const gatewayRoutes = new GatewayRoutes();
 
-// API status endpoint
-app.get('/api/status', (req, res) => {
-  res.json({
-    gateway: 'operational',
-    services: Object.keys(SERVICES),
-    timestamp: new Date().toISOString()
-  });
-});
+// Use the intelligent routing system
+app.use('/', gatewayRoutes.getRouter());
 
 // Serve static files from public directory
 app.use(express.static(path.join(__dirname, '../public'), {
