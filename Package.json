@@ -73,6 +73,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/your-org/comment-categorization-gateway.git"
+    "url": "https://github.com/SaifDalli2/gateway-service.git"
   }
 }
