@@ -37,9 +37,17 @@ class AuthenticationManager {
         }
         
         return res.status(401).json({
-          error: 'Authentication Required',
-          message: 'Please provide a valid authentication token',
-          timestamp: new Date().toISOString()
+          success: false,
+          error: {
+            code: 'AUTH_TOKEN_REQUIRED',
+            message: 'Please provide a valid authentication token',
+            suggestion: 'Include Authorization: Bearer <token> in request headers'
+          },
+          metadata: {
+            timestamp: new Date().toISOString(),
+            requestId: req.headers['x-request-id'] || this.generateRequestId(),
+            service: 'gateway'
+          }
         });
       }
 
@@ -54,36 +62,84 @@ class AuthenticationManager {
           }
           
           return res.status(401).json({
-            error: 'Invalid Token',
-            message: 'Authentication token is invalid or expired',
-            timestamp: new Date().toISOString()
+            success: false,
+            error: {
+              code: 'AUTH_TOKEN_INVALID',
+              message: 'Authentication token is invalid or expired',
+              suggestion: 'Please login again to get a new token'
+            },
+            metadata: {
+              timestamp: new Date().toISOString(),
+              requestId: req.headers['x-request-id'] || this.generateRequestId(),
+              service: 'gateway'
+            }
           });
         }
 
         // Check role requirements
         if (requireRoles.length > 0 && !this.hasRequiredRoles(decoded, requireRoles)) {
           return res.status(403).json({
-            error: 'Insufficient Permissions', 
-            message: 'You do not have the required permissions for this resource',
-            requiredRoles: requireRoles,
-            timestamp: new Date().toISOString()
+            success: false,
+            error: {
+              code: 'INSUFFICIENT_PERMISSIONS',
+              message: 'You do not have the required permissions for this resource',
+              details: `Required roles: ${requireRoles.join(', ')}`
+            },
+            metadata: {
+              timestamp: new Date().toISOString(),
+              requestId: req.headers['x-request-id'] || this.generateRequestId(),
+              service: 'gateway'
+            }
           });
         }
 
-        // Attach user info to request
-        req.user = decoded;
+        // Attach user info to request (following shared knowledge User interface)
+        req.user = {
+          id: decoded.userId || decoded.id,
+          email: decoded.email,
+          firstName: decoded.firstName,
+          lastName: decoded.lastName,
+          company: decoded.company,
+          industry: decoded.industry,
+          createdAt: decoded.createdAt,
+          updatedAt: decoded.updatedAt,
+          roles: decoded.roles || []
+        };
+        
         req.token = token;
         
-        // Add user context to logs
+        // Add user context for logging
         req.userContext = {
-          userId: decoded.userId || decoded.id,
-          email: decoded.email,
-          roles: decoded.roles || []
+          userId: req.user.id,
+          email: req.user.email,
+          roles: req.user.roles
+        };
+
+        // Add service-to-service auth headers for forwarding
+        req.serviceHeaders = {
+          'Authorization': `Bearer ${token}`,
+          'X-Service-Name': 'gateway',
+          'X-Request-ID': req.headers['x-request-id'] || this.generateRequestId()
         };
 
         next();
       } catch (error) {
-        console.error('Authentication error:', error.message);
+        console.error('Authentication error:', {
+          timestamp: new Date().toISOString(),
+          level: 'error',
+          service: 'gateway',
+          message: 'Authentication failed',
+          error: {
+            name: error.name,
+            message: error.message,
+            stack: error.stack
+          },
+          metadata: {
+            ip: req.ip,
+            userAgent: req.get('User-Agent'),
+            path: req.path
+          }
+        });
         
         if (optional) {
           req.user = null;
@@ -91,9 +147,17 @@ class AuthenticationManager {
         }
         
         return res.status(401).json({
-          error: 'Authentication Failed',
-          message: 'Failed to authenticate user',
-          timestamp: new Date().toISOString()
+          success: false,
+          error: {
+            code: 'AUTH_FAILED',
+            message: 'Failed to authenticate user',
+            suggestion: 'Please check your authentication token and try again'
+          },
+          metadata: {
+            timestamp: new Date().toISOString(),
+            requestId: req.headers['x-request-id'] || this.generateRequestId(),
+            service: 'gateway'
+          }
         });
       }
     };
@@ -110,6 +174,17 @@ class AuthenticationManager {
     try {
       // First try local JWT verification
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      
+      // Validate token structure according to shared knowledge
+      if (!this.isValidTokenStructure(decoded)) {
+        console.warn('Token structure invalid:', {
+          timestamp: new Date().toISOString(),
+          level: 'warn',
+          service: 'gateway',
+          message: 'Invalid token structure detected'
+        });
+        return null;
+      }
       
       // If we have an auth service, verify with it
       const authService = this.serviceRegistry?.getService('auth');
@@ -133,9 +208,30 @@ class AuthenticationManager {
       
       return decoded;
     } catch (error) {
-      console.warn('Token verification failed:', error.message);
+      console.warn('Token verification failed:', {
+        timestamp: new Date().toISOString(),
+        level: 'warn',
+        service: 'gateway',
+        message: 'Token verification failed',
+        error: {
+          name: error.name,
+          message: error.message
+        }
+      });
       return null;
     }
+  }
+
+  // Validate token structure according to shared knowledge AuthToken interface
+  isValidTokenStructure(decoded) {
+    return (
+      decoded &&
+      (decoded.userId || decoded.id) &&
+      decoded.email &&
+      decoded.exp &&
+      decoded.iat &&
+      decoded.exp > Math.floor(Date.now() / 1000)
+    );
   }
 
   // Verify token with auth service
@@ -144,18 +240,32 @@ class AuthenticationManager {
       const response = await axios.get(`${authService.url}/api/auth/verify`, {
         headers: {
           'Authorization': `Bearer ${token}`,
+          'X-Service-Name': 'gateway',
+          'X-Request-ID': this.generateRequestId(),
           'User-Agent': 'Gateway-Auth-Verification/1.0'
         },
         timeout: 5000
       });
 
-      if (response.status === 200 && response.data.user) {
-        return response.data.user;
+      if (response.status === 200 && response.data.success && response.data.data.user) {
+        return response.data.data.user;
       }
       
       return null;
     } catch (error) {
-      console.warn('Auth service verification failed:', error.message);
+      console.warn('Auth service verification failed:', {
+        timestamp: new Date().toISOString(),
+        level: 'warn',
+        service: 'gateway',
+        message: 'Auth service verification failed',
+        error: {
+          name: error.name,
+          message: error.message
+        },
+        metadata: {
+          authServiceUrl: authService.url
+        }
+      });
       return null;
     }
   }
@@ -174,19 +284,34 @@ class AuthenticationManager {
     
     if (!apiKey) {
       return res.status(401).json({
-        error: 'API Key Required',
-        message: 'Please provide a valid API key',
-        header: process.env.API_KEY_HEADER || 'x-api-key',
-        timestamp: new Date().toISOString()
+        success: false,
+        error: {
+          code: 'API_KEY_REQUIRED',
+          message: 'Please provide a valid API key',
+          suggestion: `Include ${process.env.API_KEY_HEADER || 'x-api-key'} header in your request`
+        },
+        metadata: {
+          timestamp: new Date().toISOString(),
+          requestId: req.headers['x-request-id'] || this.generateRequestId(),
+          service: 'gateway'
+        }
       });
     }
 
     // Basic API key validation
     if (!this.isValidApiKey(apiKey)) {
       return res.status(401).json({
-        error: 'Invalid API Key',
-        message: 'The provided API key is invalid',
-        timestamp: new Date().toISOString()
+        success: false,
+        error: {
+          code: 'API_KEY_INVALID',
+          message: 'The provided API key is invalid',
+          suggestion: 'Ensure your API key follows the correct format (sk-...)'
+        },
+        metadata: {
+          timestamp: new Date().toISOString(),
+          requestId: req.headers['x-request-id'] || this.generateRequestId(),
+          service: 'gateway'
+        }
       });
     }
 
@@ -194,12 +319,18 @@ class AuthenticationManager {
     req.apiKey = apiKey;
     req.authType = 'api_key';
     
+    // Add service headers for API key auth
+    req.serviceHeaders = {
+      [process.env.API_KEY_HEADER || 'x-api-key']: apiKey,
+      'X-Service-Name': 'gateway',
+      'X-Request-ID': req.headers['x-request-id'] || this.generateRequestId()
+    };
+    
     next();
   }
 
-  // Validate API key format
+  // Validate API key format (Claude API key format)
   isValidApiKey(apiKey) {
-    // Claude API key format validation
     return typeof apiKey === 'string' && 
            apiKey.length >= 10 && 
            apiKey.startsWith('sk-');
@@ -210,9 +341,17 @@ class AuthenticationManager {
     return (req, res, next) => {
       if (!req.user) {
         return res.status(401).json({
-          error: 'Authentication Required',
-          message: 'You must be authenticated to access this resource',
-          timestamp: new Date().toISOString()
+          success: false,
+          error: {
+            code: 'AUTH_REQUIRED',
+            message: 'You must be authenticated to access this resource',
+            suggestion: 'Please login and include your authentication token'
+          },
+          metadata: {
+            timestamp: new Date().toISOString(),
+            requestId: req.headers['x-request-id'] || this.generateRequestId(),
+            service: 'gateway'
+          }
         });
       }
 
@@ -223,11 +362,18 @@ class AuthenticationManager {
 
       if (!hasRole) {
         return res.status(403).json({
-          error: 'Insufficient Permissions',
-          message: 'You do not have the required role to access this resource',
-          requiredRoles: Array.isArray(roles) ? roles : [roles],
-          userRoles: userRoles,
-          timestamp: new Date().toISOString()
+          success: false,
+          error: {
+            code: 'INSUFFICIENT_PERMISSIONS',
+            message: 'You do not have the required role to access this resource',
+            details: `Required roles: ${Array.isArray(roles) ? roles.join(', ') : roles}`
+          },
+          metadata: {
+            timestamp: new Date().toISOString(),
+            requestId: req.headers['x-request-id'] || this.generateRequestId(),
+            service: 'gateway',
+            userRoles: userRoles
+          }
         });
       }
 
@@ -247,9 +393,17 @@ class AuthenticationManager {
     
     if (!serviceToken || !serviceId) {
       return res.status(401).json({
-        error: 'Service Authentication Required',
-        message: 'Service-to-service requests require valid service credentials',
-        timestamp: new Date().toISOString()
+        success: false,
+        error: {
+          code: 'SERVICE_AUTH_REQUIRED',
+          message: 'Service-to-service requests require valid service credentials',
+          suggestion: 'Include X-Service-Token and X-Service-ID headers'
+        },
+        metadata: {
+          timestamp: new Date().toISOString(),
+          requestId: req.headers['x-request-id'] || this.generateRequestId(),
+          service: 'gateway'
+        }
       });
     }
 
@@ -257,9 +411,17 @@ class AuthenticationManager {
     const expectedToken = this.generateServiceToken(serviceId);
     if (serviceToken !== expectedToken) {
       return res.status(401).json({
-        error: 'Invalid Service Credentials',
-        message: 'Service authentication failed',
-        timestamp: new Date().toISOString()
+        success: false,
+        error: {
+          code: 'SERVICE_AUTH_INVALID',
+          message: 'Service authentication failed',
+          suggestion: 'Verify your service credentials'
+        },
+        metadata: {
+          timestamp: new Date().toISOString(),
+          requestId: req.headers['x-request-id'] || this.generateRequestId(),
+          service: 'gateway'
+        }
       });
     }
 
@@ -288,11 +450,11 @@ class AuthenticationManager {
   // User session middleware
   attachUserSession(req, res, next) {
     if (req.user) {
-      // Enhance request with user session info
+      // Enhance request with user session info (following shared knowledge)
       req.session = {
-        userId: req.user.userId || req.user.id,
+        userId: req.user.id,
         email: req.user.email,
-        roles: req.user.roles || [],
+        roles: req.user.roles,
         industry: req.user.industry,
         company: req.user.company,
         sessionStart: Date.now()
@@ -300,6 +462,11 @@ class AuthenticationManager {
     }
     
     next();
+  }
+
+  // Generate request ID for tracing
+  generateRequestId() {
+    return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 
   // Start cache cleanup process
@@ -316,3 +483,69 @@ class AuthenticationManager {
     
     for (const [token, data] of this.tokenCache.entries()) {
       if (data.expiry <= now) {
+        this.tokenCache.delete(token);
+        cleaned++;
+      }
+    }
+    
+    if (cleaned > 0) {
+      console.log(`Cleaned ${cleaned} expired tokens from cache`, {
+        timestamp: new Date().toISOString(),
+        level: 'info',
+        service: 'gateway',
+        message: 'Token cache cleanup completed',
+        metadata: {
+          tokensRemoved: cleaned,
+          remainingTokens: this.tokenCache.size
+        }
+      });
+    }
+  }
+
+  // Get authentication statistics
+  getAuthStats() {
+    return {
+      cachedTokens: this.tokenCache.size,
+      cacheExpiryMs: this.cacheExpiry,
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  // Clear all cached tokens (for security reasons)
+  clearTokenCache() {
+    const size = this.tokenCache.size;
+    this.tokenCache.clear();
+    
+    console.log(`Cleared all tokens from cache`, {
+      timestamp: new Date().toISOString(),
+      level: 'info',
+      service: 'gateway',
+      message: 'Token cache cleared',
+      metadata: {
+        tokensRemoved: size
+      }
+    });
+  }
+
+  // Middleware to add request tracing headers
+  addTracingHeaders() {
+    return (req, res, next) => {
+      // Generate or use existing request ID
+      const requestId = req.headers['x-request-id'] || this.generateRequestId();
+      const traceId = req.headers['x-trace-id'] || `trace_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      // Set headers for request tracking
+      req.headers['x-request-id'] = requestId;
+      req.headers['x-trace-id'] = traceId;
+      req.headers['x-service-name'] = 'gateway';
+      
+      // Add to response headers for client tracking
+      res.setHeader('X-Request-ID', requestId);
+      res.setHeader('X-Trace-ID', traceId);
+      
+      next();
+    };
+  }
+}
+
+module.exports = AuthenticationManager;
