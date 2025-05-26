@@ -1,6 +1,8 @@
 // gateway-service/services/ServiceRegistry.js
 const axios = require('axios');
 const EventEmitter = require('events');
+const logger = require('../utils/logger');
+const metrics = require('../utils/metrics');
 
 class ServiceRegistry extends EventEmitter {
   constructor(options = {}) {
@@ -67,18 +69,14 @@ class ServiceRegistry extends EventEmitter {
       this.registerService(config.name, config);
     });
 
-    console.log(JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: 'info',
-      service: 'gateway',
-      message: 'Service registry initialized',
-      metadata: {
+    logger.info('Service registry initialized', {
+      serviceRegistry: {
         registeredServices: Array.from(this.services.keys()),
         healthCheckInterval: this.healthCheckInterval,
         circuitBreakerEnabled: this.circuitBreakerEnabled,
         loadBalanceStrategy: this.loadBalanceStrategy
       }
-    }));
+    });
   }
 
   // Parse service URLs (supports multiple instances)
@@ -114,17 +112,13 @@ class ServiceRegistry extends EventEmitter {
       config
     });
 
-    console.log(JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: 'info',
-      service: 'gateway',
-      message: 'Service registered',
-      metadata: {
+    logger.info('Service registered', {
+      serviceRegistry: {
         serviceName: name,
         instanceCount: serviceInstances.length,
         urls: config.urls
       }
-    }));
+    });
   }
 
   // Get a healthy service instance using load balancing
@@ -236,17 +230,16 @@ class ServiceRegistry extends EventEmitter {
       instance.consecutiveFailures = 0;
       if (instance.circuitBreakerState === 'half-open') {
         instance.circuitBreakerState = 'closed';
-        console.log(JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: 'info',
-          service: 'gateway',
-          message: 'Circuit breaker closed after successful request',
-          metadata: {
+        logger.info('Circuit breaker closed after successful request', {
+          serviceRegistry: {
             serviceName,
             instanceId,
             url: instance.url
           }
-        }));
+        });
+
+        // Record circuit breaker state change
+        metrics.recordCircuitBreakerState(serviceName, instanceId, 'closed');
       }
     } else {
       instance.errorCount++;
@@ -260,35 +253,34 @@ class ServiceRegistry extends EventEmitter {
         
         instance.circuitBreakerState = 'open';
         
-        console.log(JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: 'warn',
-          service: 'gateway',
-          message: 'Circuit breaker opened due to consecutive failures',
-          metadata: {
+        logger.warn('Circuit breaker opened due to consecutive failures', {
+          serviceRegistry: {
             serviceName,
             instanceId,
             url: instance.url,
             consecutiveFailures: instance.consecutiveFailures,
             threshold: this.circuitBreakerThreshold
           }
-        }));
+        });
+
+        // Record circuit breaker metrics
+        metrics.recordCircuitBreakerState(serviceName, instanceId, 'open');
+        metrics.recordCircuitBreakerTrip(serviceName, instanceId);
 
         // Schedule circuit breaker to half-open
         setTimeout(() => {
           if (instance.circuitBreakerState === 'open') {
             instance.circuitBreakerState = 'half-open';
-            console.log(JSON.stringify({
-              timestamp: new Date().toISOString(),
-              level: 'info',
-              service: 'gateway',
-              message: 'Circuit breaker moved to half-open state',
-              metadata: {
+            logger.info('Circuit breaker moved to half-open state', {
+              serviceRegistry: {
                 serviceName,
                 instanceId,
                 url: instance.url
               }
-            }));
+            });
+
+            // Record circuit breaker state change
+            metrics.recordCircuitBreakerState(serviceName, instanceId, 'half-open');
           }
         }, this.circuitBreakerResetTimeout);
       }
@@ -324,16 +316,7 @@ class ServiceRegistry extends EventEmitter {
     try {
       await Promise.allSettled(healthCheckPromises);
     } catch (error) {
-      console.error(JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: 'error',
-        service: 'gateway',
-        message: 'Error during health checks',
-        error: {
-          name: error.name,
-          message: error.message
-        }
-      }));
+      logger.error('Error during health checks', {}, error);
     }
   }
 
@@ -357,19 +340,18 @@ class ServiceRegistry extends EventEmitter {
       instance.lastHealthCheck = new Date().toISOString();
       instance.lastResponseTime = responseTime;
 
+      // Record health check metrics
+      metrics.recordServiceHealth(serviceName, instance.id, instance.status === 'healthy', responseTime);
+
       if (wasUnhealthy && instance.status === 'healthy') {
-        console.log(JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: 'info',
-          service: 'gateway',
-          message: 'Service instance recovered',
-          metadata: {
+        logger.info('Service instance recovered', {
+          serviceRegistry: {
             serviceName,
             instanceId: instance.id,
             url: instance.url,
             responseTime
           }
-        }));
+        });
 
         this.emit('serviceRecovered', { serviceName, instance });
       }
@@ -382,20 +364,18 @@ class ServiceRegistry extends EventEmitter {
       instance.lastHealthCheck = new Date().toISOString();
       instance.lastResponseTime = responseTime;
 
+      // Record health check metrics
+      metrics.recordServiceHealth(serviceName, instance.id, false, responseTime);
+
       if (wasHealthy) {
-        console.log(JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: 'warn',
-          service: 'gateway',
-          message: 'Service instance became unhealthy',
-          metadata: {
+        logger.warn('Service instance became unhealthy', {
+          serviceRegistry: {
             serviceName,
             instanceId: instance.id,
             url: instance.url,
-            error: error.message,
             responseTime
           }
-        }));
+        }, error);
 
         this.emit('serviceUnhealthy', { serviceName, instance, error });
       }
@@ -477,13 +457,7 @@ class ServiceRegistry extends EventEmitter {
       this.healthCheckTimer = null;
     }
 
-    console.log(JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: 'info',
-      service: 'gateway',
-      message: 'Service registry shutting down gracefully'
-    }));
-
+    logger.info('Service registry shutting down gracefully');
     this.emit('shutdown');
   }
 
@@ -506,13 +480,9 @@ class ServiceRegistry extends EventEmitter {
     const removed = this.services.delete(serviceName);
     
     if (removed) {
-      console.log(JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: 'info',
-        service: 'gateway',
-        message: 'Service unregistered',
-        metadata: { serviceName }
-      }));
+      logger.info('Service unregistered', {
+        serviceRegistry: { serviceName }
+      });
     }
 
     return removed;

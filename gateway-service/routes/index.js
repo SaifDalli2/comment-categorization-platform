@@ -2,6 +2,8 @@
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const ServiceRegistry = require('../services/ServiceRegistry');
+const logger = require('../utils/logger');
+const metrics = require('../utils/metrics');
 
 class GatewayRoutes {
   constructor() {
@@ -14,32 +16,26 @@ class GatewayRoutes {
   setupServiceRegistryEvents() {
     // Listen for service health events
     this.serviceRegistry.on('serviceRecovered', ({ serviceName, instance }) => {
-      console.log(JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: 'info',
-        service: 'gateway',
-        message: 'Service recovered - routing resumed',
-        metadata: {
-          serviceName,
+      logger.info('Service recovered - routing resumed', {
+        service: {
+          name: serviceName,
           instanceId: instance.id,
           url: instance.url
         }
-      }));
+      });
     });
 
     this.serviceRegistry.on('serviceUnhealthy', ({ serviceName, instance, error }) => {
-      console.log(JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: 'warn',
-        service: 'gateway',
-        message: 'Service unhealthy - routing affected',
-        metadata: {
-          serviceName,
+      logger.warn('Service unhealthy - routing affected', {
+        service: {
+          name: serviceName,
           instanceId: instance.id,
-          url: instance.url,
-          error: error.message
+          url: instance.url
+        },
+        error: {
+          message: error.message
         }
-      }));
+      });
     });
   }
 
@@ -153,12 +149,8 @@ class GatewayRoutes {
           }
         }
 
-        console.log(JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: 'info',
-          service: 'gateway',
-          message: 'Proxying request',
-          metadata: {
+        logger.info('Proxying request', {
+          proxy: {
             serviceName,
             method: req.method,
             path: req.path,
@@ -166,7 +158,7 @@ class GatewayRoutes {
             requestId: req.headers['x-request-id'],
             userId: req.userContext?.userId
           }
-        }));
+        });
       },
 
       // Response transformation and metrics
@@ -185,12 +177,11 @@ class GatewayRoutes {
         proxyRes.headers['X-Response-Time'] = `${responseTime}ms`;
         proxyRes.headers['X-Gateway-Service'] = 'claude-analysis-gateway';
 
-        console.log(JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: 'info',
-          service: 'gateway',
-          message: 'Request completed',
-          metadata: {
+        // Record service metrics
+        metrics.recordServiceRequest(serviceName, req.method, proxyRes.statusCode, responseTime, isSuccess);
+
+        logger.info('Request completed', {
+          proxy: {
             serviceName,
             method: req.method,
             path: req.path,
@@ -200,7 +191,7 @@ class GatewayRoutes {
             requestId: req.headers['x-request-id'],
             userId: req.userContext?.userId
           }
-        }));
+        });
       },
 
       // Error handling
@@ -213,14 +204,19 @@ class GatewayRoutes {
           this.serviceRegistry.recordRequest(serviceName, service.id, false, responseTime);
         }
 
-        console.error(JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: 'error',
-          service: 'gateway',
-          message: 'Proxy request failed',
-          error: {
-            name: err.name,
-            message: err.message,
+        logger.error('Proxy request failed', {
+          proxy: {
+            serviceName,
+            method: req.method,
+            path: req.path,
+            responseTime,
+            requestId: req.headers['x-request-id'],
+            userId: req.userContext?.userId
+          }
+        }, err);
+
+        // Record failed service metrics
+        metrics.recordServiceRequest(serviceName, req.method, statusCode, responseTime, false);
             code: err.code
           },
           metadata: {
@@ -408,13 +404,7 @@ class GatewayRoutes {
 
   // Graceful shutdown
   async shutdown() {
-    console.log(JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: 'info',
-      service: 'gateway',
-      message: 'Gateway routes shutting down'
-    }));
-
+    logger.info('Gateway routes shutting down');
     await this.serviceRegistry.shutdown();
   }
 }
