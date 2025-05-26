@@ -2,6 +2,8 @@
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const ServiceRegistry = require('../services/ServiceRegistry');
+const ProxyErrorHandler = require('../utils/proxyErrorHandler');
+const ErrorHandler = require('../middleware/errorHandler');
 const logger = require('../utils/logger');
 const metrics = require('../utils/metrics');
 
@@ -9,6 +11,8 @@ class GatewayRoutes {
   constructor() {
     this.router = express.Router();
     this.serviceRegistry = new ServiceRegistry();
+    this.errorHandler = new ErrorHandler();
+    this.proxyErrorHandler = new ProxyErrorHandler(this.errorHandler);
     this.setupRoutes();
     this.setupServiceRegistryEvents();
   }
@@ -56,7 +60,11 @@ class GatewayRoutes {
     this.router.get('/api/gateway/stats', (req, res) => {
       res.json({
         success: true,
-        data: this.serviceRegistry.getStats(),
+        data: {
+          ...this.serviceRegistry.getStats(),
+          proxy: this.proxyErrorHandler.getRetryStats(),
+          errors: this.errorHandler.getErrorStats()
+        },
         metadata: {
           timestamp: new Date().toISOString(),
           requestId: req.headers['x-request-id'],
@@ -118,7 +126,9 @@ class GatewayRoutes {
         const service = this.serviceRegistry.getService(serviceName);
         
         if (!service) {
-          throw new Error(`Service ${serviceName} not available`);
+          const error = new Error(`Service ${serviceName} not available`);
+          error.code = 'SERVICE_DISCOVERY_FAILED';
+          throw error;
         }
         
         return service.url;
@@ -194,58 +204,8 @@ class GatewayRoutes {
         });
       },
 
-      // Error handling
-      onError: (err, req, res) => {
-        const responseTime = Date.now() - (req.proxyStartTime || Date.now());
-        
-        // Record failed request
-        const service = this.serviceRegistry.getService(serviceName);
-        if (service) {
-          this.serviceRegistry.recordRequest(serviceName, service.id, false, responseTime);
-        }
-
-        // Determine appropriate status code
-        let statusCode = 503; // Service Unavailable
-        if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
-          statusCode = 503;
-        } else if (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT') {
-          statusCode = 504; // Gateway Timeout
-        }
-
-        logger.error('Proxy request failed', {
-          proxy: {
-            serviceName,
-            method: req.method,
-            path: req.path,
-            responseTime,
-            requestId: req.headers['x-request-id'],
-            userId: req.userContext?.userId
-          }
-        }, err);
-
-        // Record failed service metrics
-        metrics.recordServiceRequest(serviceName, req.method, statusCode, responseTime, false);
-
-        // Return standardized error response
-        if (!res.headersSent) {
-          const errorResponse = {
-            success: false,
-            error: {
-              code: 'SERVICE_UNAVAILABLE',
-              message: `The ${serviceName} service is currently unavailable`,
-              suggestion: 'Please try again later or contact support if the problem persists'
-            },
-            metadata: {
-              timestamp: new Date().toISOString(),
-              requestId: req.headers['x-request-id'] || 'unknown',
-              service: 'gateway',
-              targetService: serviceName
-            }
-          };
-
-          res.status(statusCode).json(errorResponse);
-        }
-      },
+      // Enhanced error handling with retry logic
+      onError: this.proxyErrorHandler.handleProxyError(serviceName, this.serviceRegistry),
 
       // Logging
       logLevel: process.env.NODE_ENV === 'development' ? 'debug' : 'warn',
@@ -268,13 +228,7 @@ class GatewayRoutes {
         const { urls, healthPath, readyPath, metadata } = req.body;
         
         if (!urls || !Array.isArray(urls) || urls.length === 0) {
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'INVALID_INPUT',
-              message: 'URLs array is required for service registration'
-            }
-          });
+          return res.error.validation('URLs array is required for service registration');
         }
 
         const service = this.serviceRegistry.dynamicRegister(serviceName, {
@@ -298,18 +252,12 @@ class GatewayRoutes {
           }
         });
       } catch (error) {
-        res.status(400).json({
-          success: false,
-          error: {
-            code: 'REGISTRATION_FAILED',
-            message: error.message
-          },
-          metadata: {
-            timestamp: new Date().toISOString(),
-            requestId: req.headers['x-request-id'],
-            service: 'gateway'
-          }
-        });
+        logger.error('Service registration failed', {
+          serviceName: req.params.serviceName,
+          error: error.message
+        }, error);
+        
+        return res.error.send('CONFIGURATION_ERROR', error.message);
       }
     });
 
@@ -332,18 +280,12 @@ class GatewayRoutes {
           }
         });
       } catch (error) {
-        res.status(400).json({
-          success: false,
-          error: {
-            code: 'UNREGISTRATION_FAILED',
-            message: error.message
-          },
-          metadata: {
-            timestamp: new Date().toISOString(),
-            requestId: req.headers['x-request-id'],
-            service: 'gateway'
-          }
-        });
+        logger.error('Service unregistration failed', {
+          serviceName: req.params.serviceName,
+          error: error.message
+        }, error);
+        
+        return res.error.send('CONFIGURATION_ERROR', error.message);
       }
     });
 
@@ -365,11 +307,32 @@ class GatewayRoutes {
           }
         });
       } catch (error) {
-        res.status(500).json({
-          success: false,
-          error: {
-            code: 'HEALTH_CHECK_FAILED',
-            message: error.message
+        logger.error('Manual health check failed', { error: error.message }, error);
+        return res.error.send('INTERNAL_ERROR', 'Failed to perform health checks');
+      }
+    });
+
+    // Service discovery test endpoint
+    this.router.get('/api/gateway/services/:serviceName/discover', (req, res) => {
+      try {
+        const { serviceName } = req.params;
+        const service = this.serviceRegistry.getService(serviceName);
+        
+        if (!service) {
+          return res.error.notFound(`Service ${serviceName} not found or unhealthy`);
+        }
+
+        res.json({
+          success: true,
+          data: {
+            serviceName,
+            discoveredInstance: {
+              id: service.id,
+              url: service.url,
+              status: service.status,
+              lastHealthCheck: service.lastHealthCheck,
+              responseTime: service.lastResponseTime
+            }
           },
           metadata: {
             timestamp: new Date().toISOString(),
@@ -377,6 +340,13 @@ class GatewayRoutes {
             service: 'gateway'
           }
         });
+      } catch (error) {
+        logger.error('Service discovery test failed', {
+          serviceName: req.params.serviceName,
+          error: error.message
+        }, error);
+        
+        return res.error.send('SERVICE_DISCOVERY_FAILED', error.message);
       }
     });
   }
@@ -394,6 +364,8 @@ class GatewayRoutes {
   // Graceful shutdown
   async shutdown() {
     logger.info('Gateway routes shutting down');
+    this.proxyErrorHandler.cleanup();
+    this.errorHandler.cleanup();
     await this.serviceRegistry.shutdown();
   }
 }

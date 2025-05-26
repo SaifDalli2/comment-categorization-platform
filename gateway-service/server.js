@@ -2,20 +2,24 @@
 const express = require('express');
 const path = require('path');
 const compression = require('compression');
+const morgan = require('morgan');
 require('dotenv').config();
 
 // Import utilities
 const logger = require('./utils/logger');
 const metrics = require('./utils/metrics');
+const errorResponses = require('./utils/errorResponses');
 
 // Import middleware managers
 const CorsManager = require('./middleware/cors');
 const SecurityManager = require('./middleware/security');
 const AuthenticationManager = require('./middleware/auth');
 const MonitoringMiddleware = require('./middleware/monitoring');
+const ErrorHandler = require('./middleware/errorHandler');
 
 // Import routing system
 const GatewayRoutes = require('./routes');
+const ErrorMonitoringRoutes = require('./routes/errorMonitoring');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,9 +28,13 @@ const PORT = process.env.PORT || 3000;
 const corsManager = new CorsManager();
 const securityManager = new SecurityManager();
 const monitoringMiddleware = new MonitoringMiddleware();
+const errorHandler = new ErrorHandler();
 
 // Initialize gateway routing (this creates the service registry)
 const gatewayRoutes = new GatewayRoutes();
+
+// Initialize error monitoring routes
+const errorMonitoringRoutes = new ErrorMonitoringRoutes(errorHandler);
 
 // Initialize auth manager with service registry
 const authManager = new AuthenticationManager(gatewayRoutes.getServiceRegistry());
@@ -42,7 +50,7 @@ app.use(monitoringMiddleware.monitor());
 // 2. Security headers first (before any processing)
 app.use(securityManager.securityHeaders());
 
-// 2. Compression for performance
+// 2.1. Compression for performance
 if (process.env.ENABLE_COMPRESSION !== 'false') {
   app.use(compression());
 }
@@ -56,6 +64,9 @@ app.use(express.json({
   }
 }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// 3.1. Validation error handling (must be after body parsing)
+app.use(errorHandler.handleValidationError());
 
 // 4. Request logging (structured logging)
 if (process.env.ENABLE_REQUEST_LOGGING !== 'false') {
@@ -89,6 +100,9 @@ app.use(securityManager.dynamicRateLimit());
 // 8. Request sanitization
 app.use(securityManager.sanitizeRequest());
 
+// 8.1. Error response utilities (inject into request/response)
+app.use(errorResponses.middleware());
+
 // 9. CORS error handling
 app.use(corsManager.handleCorsError());
 
@@ -110,6 +124,9 @@ app.get('/health', (req, res) => {
 app.get('/metrics', monitoringMiddleware.metricsEndpoint());
 app.get('/health/monitoring', monitoringMiddleware.healthCheck());
 
+// Error monitoring routes
+app.use('/', errorMonitoringRoutes.getRouter());
+
 // Gateway status endpoint
 app.get('/api/status', (req, res) => {
   res.json({
@@ -121,7 +138,8 @@ app.get('/api/status', (req, res) => {
       timestamp: new Date().toISOString(),
       cors: corsManager.getCorsInfo(),
       security: securityManager.getSecurityStats(),
-      auth: authManager.getAuthStats()
+      auth: authManager.getAuthStats(),
+      errors: errorHandler.getErrorStats()
     },
     metadata: {
       timestamp: new Date().toISOString(),
@@ -150,37 +168,13 @@ if (process.env.NODE_ENV === 'development') {
     const { origins } = req.body;
     
     if (!Array.isArray(origins)) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_INPUT',
-          message: 'Origins must be an array of strings',
-          suggestion: 'Provide an array of origin URLs'
-        },
-        metadata: {
-          timestamp: new Date().toISOString(),
-          requestId: req.headers['x-request-id'],
-          service: 'gateway'
-        }
-      });
+      return res.error.validation('Origins must be an array of strings');
     }
 
     const validOrigins = origins.filter(origin => corsManager.isValidOrigin(origin));
     
     if (validOrigins.length !== origins.length) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_ORIGINS',
-          message: 'Some origins have invalid format',
-          details: 'Origins must be valid URLs with http:// or https:// protocol'
-        },
-        metadata: {
-          timestamp: new Date().toISOString(),
-          requestId: req.headers['x-request-id'],
-          service: 'gateway'
-        }
-      });
+      return res.error.validation('Some origins have invalid format. Origins must be valid URLs with http:// or https:// protocol');
     }
 
     const updated = corsManager.updateAllowedOrigins(validOrigins);
@@ -234,106 +228,11 @@ app.use(express.static(path.join(__dirname, '../public'), {
 
 // ===== ERROR HANDLING =====
 
-// Global error handling middleware (following shared knowledge format)
-app.use((err, req, res, next) => {
-  // Log error with structured logging
-  console.error(JSON.stringify({
-    timestamp: new Date().toISOString(),
-    level: 'error',
-    service: 'gateway',
-    message: 'Unhandled error',
-    error: {
-      name: err.name,
-      message: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    },
-    metadata: {
-      ip: req.ip,
-      userAgent: req.get('User-Agent'),
-      path: req.path,
-      method: req.method,
-      requestId: req.headers['x-request-id']
-    }
-  }));
-  
-  // Standard error response format (following shared knowledge)
-  const errorResponse = {
-    success: false,
-    error: {
-      code: err.code || 'INTERNAL_SERVER_ERROR',
-      message: err.message || 'An unexpected error occurred',
-      suggestion: err.suggestion || 'Please try again later or contact support if the problem persists'
-    },
-    metadata: {
-      timestamp: new Date().toISOString(),
-      requestId: req.headers['x-request-id'] || 'unknown',
-      service: 'gateway'
-    }
-  };
-  
-  // Don't send error details in production unless it's a client error
-  if (process.env.NODE_ENV !== 'production' || (err.status >= 400 && err.status < 500)) {
-    if (err.details) {
-      errorResponse.error.details = err.details;
-    }
-  }
-  
-  res.status(err.status || 500).json(errorResponse);
-});
+// Main error handling middleware (following shared knowledge format)
+app.use(errorHandler.handleError());
 
 // 404 handler for unmatched routes (following shared knowledge format)
-app.use('*', (req, res) => {
-  // Log 404 for monitoring
-  console.log(JSON.stringify({
-    timestamp: new Date().toISOString(),
-    level: 'warn',
-    service: 'gateway',
-    message: 'Route not found',
-    metadata: {
-      path: req.originalUrl,
-      method: req.method,
-      ip: req.ip,
-      userAgent: req.get('User-Agent'),
-      requestId: req.headers['x-request-id']
-    }
-  }));
-
-  // If it's an API request, return JSON
-  if (req.originalUrl.startsWith('/api/')) {
-    return res.status(404).json({
-      success: false,
-      error: {
-        code: 'ENDPOINT_NOT_FOUND',
-        message: 'The requested API endpoint does not exist',
-        suggestion: 'Check the API documentation for available endpoints'
-      },
-      metadata: {
-        timestamp: new Date().toISOString(),
-        requestId: req.headers['x-request-id'] || 'unknown',
-        service: 'gateway'
-      }
-    });
-  }
-  
-  // For non-API requests, try to serve index.html (SPA support)
-  res.sendFile(path.join(__dirname, '../public/index.html'), (err) => {
-    if (err) {
-      res.status(404).json({
-        success: false,
-        error: {
-          code: 'RESOURCE_NOT_FOUND',
-          message: 'The requested resource could not be found',
-          suggestion: 'Check the URL and try again'
-        },
-        metadata: {
-          timestamp: new Date().toISOString(),
-          requestId: req.headers['x-request-id'] || 'unknown',
-          service: 'gateway'
-        }
-      });
-    }
-  });
-});
+app.use('*', errorHandler.handle404());
 
 // ===== GRACEFUL SHUTDOWN =====
 process.on('SIGTERM', async () => {
@@ -348,6 +247,7 @@ process.on('SIGTERM', async () => {
   securityManager.cleanup();
   authManager.clearTokenCache();
   monitoringMiddleware.cleanup();
+  errorHandler.cleanup();
   await gatewayRoutes.shutdown();
   
   process.exit(0);
@@ -365,6 +265,7 @@ process.on('SIGINT', async () => {
   securityManager.cleanup();
   authManager.clearTokenCache();
   monitoringMiddleware.cleanup();
+  errorHandler.cleanup();
   await gatewayRoutes.shutdown();
   
   process.exit(0);
@@ -413,7 +314,8 @@ const server = app.listen(PORT, () => {
       health: `http://localhost:${PORT}/health`,
       metrics: `http://localhost:${PORT}/metrics`,
       status: `http://localhost:${PORT}/api/status`,
-      monitoring: `http://localhost:${PORT}/health/monitoring`
+      monitoring: `http://localhost:${PORT}/health/monitoring`,
+      errorMonitoring: `http://localhost:${PORT}/api/monitoring/errors`
     },
     features: {
       rateLimiting: 'enabled',
@@ -421,7 +323,9 @@ const server = app.listen(PORT, () => {
       helmet: 'enabled',
       authentication: 'enabled',
       monitoring: 'enabled',
-      serviceDiscovery: 'enabled'
+      serviceDiscovery: 'enabled',
+      errorHandling: 'enabled',
+      errorMonitoring: 'enabled'
     }
   });
 });
