@@ -1,5 +1,5 @@
 {
-  "name": "comment-categorization-gateway",
+  "name": "gateway-service",
   "version": "1.0.0",
   "description": "Optimized API Gateway for Comment Categorization Microservices",
   "main": "server.js",
