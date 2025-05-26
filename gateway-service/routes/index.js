@@ -204,6 +204,14 @@ class GatewayRoutes {
           this.serviceRegistry.recordRequest(serviceName, service.id, false, responseTime);
         }
 
+        // Determine appropriate status code
+        let statusCode = 503; // Service Unavailable
+        if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
+          statusCode = 503;
+        } else if (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT') {
+          statusCode = 504; // Gateway Timeout
+        }
+
         logger.error('Proxy request failed', {
           proxy: {
             serviceName,
@@ -217,17 +225,6 @@ class GatewayRoutes {
 
         // Record failed service metrics
         metrics.recordServiceRequest(serviceName, req.method, statusCode, responseTime, false);
-            code: err.code
-          },
-          metadata: {
-            serviceName,
-            method: req.method,
-            path: req.path,
-            responseTime,
-            requestId: req.headers['x-request-id'],
-            userId: req.userContext?.userId
-          }
-        }));
 
         // Return standardized error response
         if (!res.headersSent) {
@@ -245,14 +242,6 @@ class GatewayRoutes {
               targetService: serviceName
             }
           };
-
-          // Determine appropriate status code
-          let statusCode = 503; // Service Unavailable
-          if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
-            statusCode = 503;
-          } else if (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT') {
-            statusCode = 504; // Gateway Timeout
-          }
 
           res.status(statusCode).json(errorResponse);
         }
