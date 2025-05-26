@@ -4,16 +4,16 @@ FROM node:18-alpine
 # Set working directory
 WORKDIR /app
 
+# Create non-root user for security
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
 # Install dependencies first (for better caching)
 COPY package*.json ./
 RUN npm ci --only=production && npm cache clean --force
 
 # Copy source code
 COPY . .
-
-# Create non-root user for security
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
 
 # Change ownership of the app directory
 RUN chown -R nodejs:nodejs /app
