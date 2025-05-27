@@ -73,6 +73,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/SaifDalli2/gateway-service.git"
+    "url": "git+https://github.com/SaifDalli2/gateway-service.git"
   }
 }
