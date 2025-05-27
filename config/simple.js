@@ -1,4 +1,4 @@
-// gateway-service/config/simple.js
+// gateway-service/config/simple.js - Updated for Heroku
 const dotenv = require('dotenv');
 
 // Load environment variables
@@ -8,17 +8,23 @@ const config = {
   port: parseInt(process.env.PORT) || 3000,
   
   services: {
-    auth: process.env.AUTH_SERVICE_URL || 'http://localhost:3001',
-    comment: process.env.COMMENT_SERVICE_URL || 'http://localhost:3002',
-    industry: process.env.INDUSTRY_SERVICE_URL || 'http://localhost:3003',
-    nps: process.env.NPS_SERVICE_URL || 'http://localhost:3004'
+    auth: process.env.AUTH_SERVICE_URL || 'https://your-auth-service.herokuapp.com',
+    comment: process.env.COMMENT_SERVICE_URL || 'https://your-comment-service.herokuapp.com',
+    industry: process.env.INDUSTRY_SERVICE_URL || 'https://your-industry-service.herokuapp.com',
+    nps: process.env.NPS_SERVICE_URL || 'https://your-nps-service.herokuapp.com'
   },
   
   security: {
     jwtSecret: process.env.JWT_SECRET,
     corsOrigins: process.env.ALLOWED_ORIGINS ? 
       process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim()) : 
-      ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173']
+      [
+        'https://gateway-service-b25f91548194.herokuapp.com',
+        'https://your-frontend-app.netlify.app',
+        'https://your-frontend-app.vercel.app',
+        // Add your frontend URLs here
+        ...(process.env.NODE_ENV === 'development' ? ['http://localhost:3000', 'http://localhost:5173'] : [])
+      ]
   },
   
   monitoring: {
@@ -50,5 +56,12 @@ if (config.security.jwtSecret && config.security.jwtSecret.length < 32) {
     process.exit(1);
   }
 }
+
+// Log configuration for debugging (without secrets)
+console.log('Gateway Configuration:');
+console.log(`- Port: ${config.port}`);
+console.log(`- Environment: ${process.env.NODE_ENV || 'development'}`);
+console.log(`- Services: ${Object.keys(config.services).join(', ')}`);
+console.log(`- CORS Origins: ${config.security.corsOrigins.length} configured`);
 
 module.exports = config;
