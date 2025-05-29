@@ -1,43 +1,26 @@
 {
   "name": "gateway-service",
   "version": "1.1.0",
-  "description": "Enhanced API Gateway with Service Synchronization for Comment Categorization Microservices",
+  "description": "Enhanced API Gateway with Service Synchronization",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "dev:enhanced": "NODE_ENV=development FEATURE_SYNC_MONITORING=true FEATURE_ORCHESTRATION=true nodemon server.js",
     "test": "jest",
-    "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "test:ci": "jest --ci --coverage --watchAll=false",
-    "test:integration": "jest --testMatch='**/tests/integration/**/*.test.js'",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "validate": "npm run lint && npm run test",
     "health-check": "node healthcheck.js",
-    "sync:check": "node scripts/check-sync.js",
-    "sync:status": "curl -s https://gateway-service-b25f91548194.herokuapp.com/api/gateway/sync/status | jq .",
-    "docker:build": "docker build -t gateway-service:enhanced .",
-    "docker:run": "docker run -p 3000:3000 --env-file .env gateway-service:enhanced",
-    "security:audit": "npm audit",
-    "clean": "rm -rf node_modules coverage .nyc_output",
+    "sync:check": "node scripts/simple-sync-check.js",
+    "sync:check:json": "node scripts/simple-sync-check.js --json",
+    "sync:gateway": "node scripts/simple-sync-check.js --gateway-only",
+    "production:check": "curl -s https://gateway-service-b25f91548194.herokuapp.com/health",
+    "production:sync": "curl -s https://gateway-service-b25f91548194.herokuapp.com/health/sync",
+    "production:services": "curl -s https://gateway-service-b25f91548194.herokuapp.com/health/services",
     "heroku:deploy": "git push heroku main",
     "heroku:logs": "heroku logs --tail --app=gateway-service-b25f91548194"
   },
-  "keywords": [
-    "api-gateway",
-    "microservices",
-    "comment-categorization",
-    "proxy",
-    "service-discovery",
-    "synchronization",
-    "orchestration",
-    "circuit-breaker",
-    "health-monitoring"
-  ],
-  "author": "Claude Analysis Team",
-  "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
     "http-proxy-middleware": "^2.0.6",
@@ -52,76 +35,18 @@
     "nodemon": "^2.0.22",
     "jest": "^29.5.0",
     "supertest": "^6.3.3",
-    "eslint": "^8.41.0",
-    "@types/jest": "^29.5.1",
-    "nyc": "^15.1.0"
+    "eslint": "^8.41.0"
   },
   "engines": {
     "node": ">=16.0.0",
     "npm": ">=8.0.0"
   },
-  "jest": {
-    "testEnvironment": "node",
-    "collectCoverageFrom": [
-      "middleware/**/*.js",
-      "services/**/*.js", 
-      "utils/**/*.js",
-      "config/**/*.js",
-      "server.js",
-      "!**/node_modules/**",
-      "!**/coverage/**",
-      "!**/*.test.js",
-      "!**/*.spec.js"
-    ],
-    "coverageThreshold": {
-      "global": {
-        "branches": 75,
-        "functions": 75,
-        "lines": 75,
-        "statements": 75
-      }
-    },
-    "testMatch": [
-      "<rootDir>/tests/**/*.test.js",
-      "<rootDir>/tests/**/*.spec.js"
-    ],
-    "setupFilesAfterEnv": ["<rootDir>/tests/setup.js"],
-    "testTimeout": 15000,
-    "verbose": true
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/your-org/gateway-service.git"
-  },
-  "bugs": {
-    "url": "https://github.com/your-org/gateway-service/issues"
-  },
-  "homepage": "https://github.com/your-org/gateway-service#readme",
-  "nodemonConfig": {
-    "watch": [
-      "server.js",
-      "config/",
-      "middleware/",
-      "services/",
-      "utils/"
-    ],
-    "ext": "js,json",
-    "ignore": [
-      "tests/",
-      "coverage/",
-      "node_modules/"
-    ],
-    "env": {
-      "NODE_ENV": "development",
-      "LOG_LEVEL": "debug"
-    }
-  },
-  "heroku": {
-    "buildpack": "heroku/nodejs",
-    "stack": "heroku-22"
-  },
-  "config": {
-    "port": 3000,
-    "nodeVersion": "18.x"
-  }
+  "keywords": [
+    "api-gateway",
+    "microservices",
+    "service-synchronization",
+    "health-monitoring"
+  ],
+  "author": "Claude Analysis Team",
+  "license": "MIT"
 }

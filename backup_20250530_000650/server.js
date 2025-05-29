@@ -1,110 +1,19 @@
-// gateway-service/server.js - Production-ready enhanced version
+// gateway-service/server.js - Enhanced with better synchronization
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const path = require('path');
 const SimpleAuth = require('./middleware/simpleAuth');
+const EnhancedHealth = require('./services/enhancedHealth');
+const ServiceOrchestrator = require('./services/serviceOrchestrator');
 const config = require('./config/simple');
 const logger = require('./utils/simpleLogger');
 
 const app = express();
 const auth = new SimpleAuth();
-
-// Enhanced service health tracking (minimal)
-class SimpleServiceHealth {
-  constructor() {
-    this.services = config.services;
-    this.serviceStatus = new Map();
-    this.stats = {
-      totalRequests: 0,
-      successfulRequests: 0,
-      failedRequests: 0
-    };
-    
-    // Initialize service status
-    Object.keys(this.services).forEach(serviceName => {
-      this.serviceStatus.set(serviceName, {
-        name: serviceName,
-        url: this.services[serviceName],
-        status: 'unknown',
-        lastCheck: null,
-        consecutiveFailures: 0,
-        responseTime: null
-      });
-    });
-  }
-
-  recordResponse(serviceName, success, responseTime = null) {
-    this.stats.totalRequests++;
-    if (success) {
-      this.stats.successfulRequests++;
-    } else {
-      this.stats.failedRequests++;
-    }
-
-    const serviceInfo = this.serviceStatus.get(serviceName);
-    if (serviceInfo) {
-      serviceInfo.lastCheck = new Date().toISOString();
-      serviceInfo.responseTime = responseTime;
-      
-      if (success) {
-        serviceInfo.status = 'healthy';
-        serviceInfo.consecutiveFailures = 0;
-      } else {
-        serviceInfo.status = 'unhealthy';
-        serviceInfo.consecutiveFailures++;
-      }
-    }
-  }
-
-  getServiceStatus() {
-    const status = {};
-    for (const [name, info] of this.serviceStatus.entries()) {
-      status[name] = {
-        name: info.name,
-        url: info.url,
-        status: info.status,
-        lastCheck: info.lastCheck,
-        consecutiveFailures: info.consecutiveFailures,
-        responseTime: info.responseTime
-      };
-    }
-    return status;
-  }
-
-  getStats() {
-    return {
-      ...this.stats,
-      services: this.getServiceStatus(),
-      errorRate: this.stats.totalRequests > 0 ? 
-        Math.round((this.stats.failedRequests / this.stats.totalRequests) * 100) : 0
-    };
-  }
-
-  checkServices() {
-    return (req, res) => {
-      const services = this.getServiceStatus();
-      const healthyCount = Object.values(services).filter(s => s.status === 'healthy').length;
-      const totalCount = Object.keys(services).length;
-      
-      res.status(healthyCount === totalCount ? 200 : 503).json({
-        status: healthyCount === totalCount ? 'healthy' : 'degraded',
-        service: 'gateway',
-        timestamp: new Date().toISOString(),
-        dependencies: services,
-        summary: {
-          totalServices: totalCount,
-          healthyServices: healthyCount,
-          unhealthyServices: totalCount - healthyCount
-        }
-      });
-    };
-  }
-}
-
-const health = new SimpleServiceHealth();
+const health = new EnhancedHealth();
+const orchestrator = new ServiceOrchestrator();
 
 // Basic middleware
 app.use(express.json({ limit: '10mb' }));
@@ -122,16 +31,17 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS']
 }));
 
-// Enhanced rate limiting
-const createRateLimit = (windowMs, max, message = 'Too many requests') => {
+// Enhanced rate limiting with service-specific limits
+const createRateLimit = (windowMs, max, keyGenerator = null) => {
   return rateLimit({
     windowMs,
     max,
+    keyGenerator: keyGenerator || ((req) => req.ip),
     message: { 
       success: false,
       error: {
         code: 'RATE_LIMIT_EXCEEDED',
-        message,
+        message: 'Too many requests',
         suggestion: 'Please wait before making additional requests'
       }
     },
@@ -147,7 +57,7 @@ const createRateLimit = (windowMs, max, message = 'Too many requests') => {
         success: false,
         error: {
           code: 'RATE_LIMIT_EXCEEDED',
-          message,
+          message: 'Too many requests',
           suggestion: 'Please wait before making additional requests'
         },
         metadata: {
@@ -161,96 +71,57 @@ const createRateLimit = (windowMs, max, message = 'Too many requests') => {
 };
 
 // General rate limiting
-app.use(createRateLimit(15 * 60 * 1000, 100, 'Too many requests from this IP'));
+app.use(createRateLimit(15 * 60 * 1000, 100)); // 100 requests per 15 minutes
 
-// Request correlation and enhanced logging
+// Request correlation and logging
 app.use((req, res, next) => {
   const requestId = req.get('X-Request-ID') || 
     `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   
   req.requestId = requestId;
-  req.startTime = Date.now();
-  
   res.set('X-Request-ID', requestId);
   res.set('X-Gateway-Service', 'claude-analysis-gateway');
-  res.set('X-Gateway-Version', '1.1.0');
+  res.set('X-Gateway-Version', '1.0.0');
   
   const start = Date.now();
   res.on('finish', () => {
     const duration = Date.now() - start;
-    logger.info(`${req.method} ${req.path} ${res.statusCode} ${duration}ms`, {
-      requestId,
-      userId: req.user?.id,
-      duration
-    });
+    logger.request(req, res, duration);
   });
   
   next();
 });
 
-// Enhanced health endpoints
+// Health endpoints with enhanced sync status
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     service: 'gateway',
     timestamp: new Date().toISOString(),
     uptime: Math.floor(process.uptime()),
-    version: '1.1.0',
-    environment: process.env.NODE_ENV || 'production',
-    features: {
-      syncMonitoring: true,
-      enhancedLogging: true,
-      requestTracing: true
-    }
+    version: process.env.npm_package_version || '1.0.0',
+    environment: process.env.NODE_ENV || 'development'
   });
 });
 
 app.get('/health/services', health.checkServices());
 
-// Sync status endpoint (minimal implementation)
-app.get('/health/sync', (req, res) => {
-  const services = health.getServiceStatus();
-  const healthyServices = Object.values(services).filter(s => s.status === 'healthy');
-  
-  res.json({
-    success: true,
-    data: {
-      overallStatus: healthyServices.length === Object.keys(services).length ? 'healthy' : 'degraded',
-      lastGlobalCheck: new Date().toISOString(),
-      expectedVersion: '1.0.0',
-      services: Object.values(services).map(service => ({
-        name: service.name,
-        currentVersion: '1.0.0',
-        expectedVersion: '1.0.0',
-        status: service.status === 'healthy' ? 'in-sync' : 'unknown',
-        lastCheck: service.lastCheck,
-        delayMinutes: 0,
-        recommendation: service.status === 'healthy' ? 
-          'Service is properly synchronized' : 
-          'Check service health and connectivity'
-      }))
-    },
-    metadata: {
-      timestamp: new Date().toISOString(),
-      service: 'gateway'
-    }
-  });
-});
+app.get('/health/sync', health.checkSyncStatus());
 
-// Enhanced gateway management endpoints
+// Gateway management endpoints
 app.get('/api/gateway/services', auth.requireAuth(), (req, res) => {
   const services = health.getServiceStatus();
-  const stats = health.getStats();
+  const syncStatus = health.getSyncStatus();
   
   res.json({
     success: true,
     data: {
       services,
+      synchronization: syncStatus,
       gateway: {
         uptime: Math.floor(process.uptime()),
-        requestsHandled: stats.totalRequests,
-        errorRate: stats.errorRate,
-        version: '1.1.0'
+        requestsHandled: health.getStats().totalRequests || 0,
+        lastSync: syncStatus.lastSync
       }
     },
     metadata: {
@@ -268,9 +139,8 @@ app.get('/api/gateway/stats', auth.requireAuth(), (req, res) => {
     success: true,
     data: {
       ...stats,
-      uptime: Math.floor(process.uptime()),
-      memoryUsage: process.memoryUsage(),
-      version: '1.1.0'
+      orchestration: orchestrator.getStats(),
+      synchronization: health.getSyncStatus()
     },
     metadata: {
       timestamp: new Date().toISOString(),
@@ -280,7 +150,7 @@ app.get('/api/gateway/stats', auth.requireAuth(), (req, res) => {
   });
 });
 
-// Enhanced service proxy
+// Enhanced service proxy with better error handling and sync
 const createEnhancedServiceProxy = (serviceName, targetUrl) => {
   return createProxyMiddleware({
     target: targetUrl,
@@ -288,6 +158,7 @@ const createEnhancedServiceProxy = (serviceName, targetUrl) => {
     timeout: 30000,
     
     onProxyReq: (proxyReq, req) => {
+      // Forward user context
       if (req.user) {
         proxyReq.setHeader('X-User-ID', req.user.id);
         proxyReq.setHeader('X-User-Email', req.user.email);
@@ -297,10 +168,13 @@ const createEnhancedServiceProxy = (serviceName, targetUrl) => {
         }
       }
       
+      // Gateway identification and tracing
       proxyReq.setHeader('X-Gateway-Request', 'true');
-      proxyReq.setHeader('X-Gateway-Version', '1.1.0');
+      proxyReq.setHeader('X-Gateway-Version', '1.0.0');
       proxyReq.setHeader('X-Request-ID', req.requestId);
       proxyReq.setHeader('X-Service-Name', 'gateway');
+      
+      // Timestamp for tracking
       proxyReq.setHeader('X-Gateway-Timestamp', new Date().toISOString());
       
       logger.debug(`Proxying ${req.method} ${req.path} to ${serviceName}`, {
@@ -311,12 +185,20 @@ const createEnhancedServiceProxy = (serviceName, targetUrl) => {
     },
 
     onProxyRes: (proxyRes, req, res) => {
+      // Add response headers
       proxyRes.headers['x-served-by'] = serviceName;
       proxyRes.headers['x-gateway-service'] = 'claude-analysis-gateway';
       proxyRes.headers['x-request-id'] = req.requestId;
       
+      // Record service response for health monitoring
       const responseTime = Date.now() - req.startTime;
-      health.recordResponse(serviceName, proxyRes.statusCode < 400, responseTime);
+      health.recordServiceResponse(serviceName, proxyRes.statusCode < 400, responseTime);
+      
+      // Check for sync-related headers from services
+      const syncVersion = proxyRes.headers['x-shared-knowledge-version'];
+      if (syncVersion) {
+        health.recordServiceSyncVersion(serviceName, syncVersion);
+      }
     },
 
     onError: (err, req, res) => {
@@ -327,10 +209,11 @@ const createEnhancedServiceProxy = (serviceName, targetUrl) => {
         method: req.method
       }, err);
       
-      health.recordResponse(serviceName, false);
+      health.recordServiceResponse(serviceName, false);
       
       if (res.headersSent) return;
       
+      // Determine error type and appropriate response
       let errorCode = 'SERVICE_UNAVAILABLE';
       let statusCode = 503;
       let suggestion = 'Please try again in a few moments';
@@ -362,27 +245,143 @@ const createEnhancedServiceProxy = (serviceName, targetUrl) => {
   });
 };
 
-// Service routes
+// Service routes with enhanced authentication and rate limiting
+
+// Auth service - no auth required for login/register
 app.use('/api/auth', 
-  createRateLimit(15 * 60 * 1000, 20, 'Too many authentication attempts'),
+  createRateLimit(15 * 60 * 1000, 20), // 20 auth requests per 15 minutes
   createEnhancedServiceProxy('auth', config.services.auth)
 );
 
+// Comment service - requires auth and has job-specific rate limiting
 app.use('/api/comments', 
   auth.requireAuth(),
-  createRateLimit(60 * 60 * 1000, 10, 'Too many comment processing requests'),
+  createRateLimit(60 * 60 * 1000, 10, (req) => `${req.user?.id || req.ip}_comments`), // 10 jobs per hour per user
   createEnhancedServiceProxy('comment', config.services.comment)
 );
 
+// Industry service - minimal rate limiting
 app.use('/api/industries', 
-  createRateLimit(60 * 1000, 30, 'Too many industry requests'),
+  createRateLimit(60 * 1000, 30), // 30 requests per minute
   createEnhancedServiceProxy('industry', config.services.industry)
 );
 
+// NPS service - requires auth
 app.use('/api/nps', 
   auth.requireAuth(),
-  createRateLimit(60 * 60 * 1000, 20, 'Too many NPS requests'),
+  createRateLimit(60 * 60 * 1000, 20, (req) => `${req.user?.id || req.ip}_nps`), // 20 NPS requests per hour per user
   createEnhancedServiceProxy('nps', config.services.nps)
+);
+
+// Orchestrated endpoints for better service synchronization
+app.get('/api/orchestration/user/:userId/dashboard', 
+  auth.requireAuth(),
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+      
+      // Ensure user can only access their own dashboard or is admin
+      if (req.user.id !== userId && !req.user.roles.includes('admin')) {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'INSUFFICIENT_PERMISSIONS',
+            message: 'You can only access your own dashboard',
+            suggestion: 'Contact administrator if you need broader access'
+          }
+        });
+      }
+      
+      const dashboard = await orchestrator.getUserDashboard(userId, req.requestId);
+      
+      res.json({
+        success: true,
+        data: dashboard,
+        metadata: {
+          timestamp: new Date().toISOString(),
+          requestId: req.requestId,
+          service: 'gateway'
+        }
+      });
+      
+    } catch (error) {
+      logger.error('Dashboard orchestration failed', {
+        userId: req.params.userId,
+        requestId: req.requestId,
+        error: error.message
+      }, error);
+      
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'ORCHESTRATION_ERROR',
+          message: 'Failed to load user dashboard',
+          suggestion: 'Please try again later'
+        },
+        metadata: {
+          timestamp: new Date().toISOString(),
+          requestId: req.requestId,
+          service: 'gateway'
+        }
+      });
+    }
+  }
+);
+
+// Sync status endpoint for monitoring
+app.get('/api/gateway/sync/status', auth.requireAuth(), (req, res) => {
+  const syncStatus = health.getSyncStatus();
+  
+  res.json({
+    success: true,
+    data: {
+      overallStatus: syncStatus.status,
+      services: syncStatus.services,
+      lastGlobalSync: syncStatus.lastSync,
+      outOfSyncServices: syncStatus.services.filter(s => !s.inSync),
+      recommendations: health.getSyncRecommendations()
+    },
+    metadata: {
+      timestamp: new Date().toISOString(),
+      requestId: req.requestId,
+      service: 'gateway'
+    }
+  });
+});
+
+// Force sync endpoint (admin only)
+app.post('/api/gateway/sync/force', 
+  auth.requireAuth(),
+  auth.requireRole(['admin']),
+  async (req, res) => {
+    try {
+      logger.info('Force sync initiated', { userId: req.user.id, requestId: req.requestId });
+      
+      const syncResult = await health.forceSyncCheck();
+      
+      res.json({
+        success: true,
+        data: syncResult,
+        metadata: {
+          timestamp: new Date().toISOString(),
+          requestId: req.requestId,
+          service: 'gateway'
+        }
+      });
+      
+    } catch (error) {
+      logger.error('Force sync failed', { requestId: req.requestId }, error);
+      
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'SYNC_ERROR',
+          message: 'Failed to force synchronization',
+          suggestion: 'Check service health and try again'
+        }
+      });
+    }
+  }
 );
 
 // Static files
@@ -408,8 +407,9 @@ app.use('/api/*', (req, res) => {
   });
 });
 
-// SPA fallback
+// SPA fallback for frontend routes
 app.get('*', (req, res) => {
+  const path = require('path');
   res.sendFile(path.join(__dirname, 'public', 'index.html'), (err) => {
     if (err) {
       res.status(404).json({
@@ -417,11 +417,6 @@ app.get('*', (req, res) => {
         error: {
           code: 'RESOURCE_NOT_FOUND',
           message: 'The requested resource was not found'
-        },
-        metadata: {
-          timestamp: new Date().toISOString(),
-          requestId: req.requestId,
-          service: 'gateway'
         }
       });
     }
@@ -432,6 +427,7 @@ app.get('*', (req, res) => {
 app.use((err, req, res, next) => {
   logger.error('Unhandled error', {
     error: err.message,
+    stack: err.stack,
     requestId: req.requestId,
     path: req.path,
     method: req.method,
@@ -458,20 +454,31 @@ app.use((err, req, res, next) => {
 const PORT = config.port;
 const server = app.listen(PORT, () => {
   logger.info(`Enhanced Gateway started on port ${PORT}`);
-  logger.info(`Environment: ${process.env.NODE_ENV || 'production'}`);
+  logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
   logger.info(`Services configured: ${Object.keys(config.services).join(', ')}`);
-  logger.info(`Features: Enhanced logging, Request tracing, Service health monitoring`);
+  
+  // Initialize health checks and sync monitoring
+  health.initialize();
+  orchestrator.initialize();
 });
 
-// Graceful shutdown
+// Graceful shutdown with cleanup
 const gracefulShutdown = (signal) => {
   logger.info(`${signal} received, shutting down gracefully`);
   
-  server.close(() => {
-    logger.info('Gateway server closed cleanly');
-    process.exit(0);
+  server.close(async () => {
+    try {
+      await health.cleanup();
+      await orchestrator.cleanup();
+      logger.info('Gateway server closed cleanly');
+      process.exit(0);
+    } catch (error) {
+      logger.error('Error during shutdown', {}, error);
+      process.exit(1);
+    }
   });
   
+  // Force exit after 30 seconds
   setTimeout(() => {
     logger.error('Could not close connections in time, forcefully shutting down');
     process.exit(1);
