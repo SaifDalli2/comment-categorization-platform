@@ -1,498 +1,358 @@
-# Gateway Service API Documentation
+# Enhanced Gateway Service with Synchronization
 
-## Overview
+## 🚀 New Features
 
-The Claude Analysis Gateway Service acts as the single entry point for all client requests in the microservices architecture. It provides service discovery, load balancing, authentication, rate limiting, and request routing to backend services.
+### Service Synchronization Monitoring
+The enhanced gateway now monitors and ensures all microservices are synchronized with the shared knowledge version.
 
-## Base Information
+**Key Benefits:**
+- **Automatic Sync Detection**: Monitors shared knowledge versions across all services
+- **Health Integration**: Combines service health with sync status
+- **Proactive Alerts**: Identifies out-of-sync services before they cause issues
+- **Zero Downtime**: Ensures compatibility during service updates
 
-- **Service Name:** claude-analysis-gateway
-- **Version:** 1.0.0
-- **Base URL:** `https://api.claude-analysis.com` (Production) / `http://localhost:3000` (Development)
-- **Protocol:** HTTP/HTTPS
-- **Authentication:** JWT Bearer Token, API Key
+### Service Orchestration
+Intelligent request coordination across multiple services for complex operations.
 
-## Architecture Overview
+**Features:**
+- **Dashboard Orchestration**: Combines user data from multiple services
+- **Caching Layer**: Reduces redundant service calls
+- **Graceful Degradation**: Works even when some services are unavailable
+- **Request Tracing**: Full visibility into cross-service requests
 
-```
-Client Request → Gateway → Service Discovery → Backend Service
-     ↓              ↓            ↓                    ↓
-   CORS          Auth         Load Balance        Response
-Rate Limit    Validation     Circuit Breaker     Aggregation
-```
+### Circuit Breaker Pattern
+Automatic fault tolerance to prevent cascade failures.
 
-## Core Endpoints
+**Protection:**
+- **Failure Detection**: Monitors service failure rates
+- **Automatic Recovery**: Tests service health periodically
+- **Fast Failure**: Fails fast when services are down
+- **Statistics**: Detailed metrics on service reliability
 
-### Health and Monitoring
+## 🔧 Quick Start
 
-#### GET /health
-Basic gateway health check.
+### Environment Variables
 
-**Response:**
-```json
-{
-  "status": "healthy",
-  "service": "gateway",
-  "timestamp": "2024-01-15T10:30:00.000Z",
-  "uptime": 3600,
-  "version": "1.0.0",
-  "environment": "production"
-}
-```
+```bash
+# Required
+JWT_SECRET=your-super-secret-jwt-key-32-chars-minimum
 
-**Status Codes:**
-- `200` - Service is healthy
-- `503` - Service is degraded or unhealthy
+# Service URLs
+AUTH_SERVICE_URL=https://your-auth-service.herokuapp.com
+COMMENT_SERVICE_URL=https://your-comment-service.herokuapp.com
+INDUSTRY_SERVICE_URL=https://your-industry-service.herokuapp.com
+NPS_SERVICE_URL=https://your-nps-service.herokuapp.com
 
-#### GET /health/services
-Detailed health check including backend services.
+# Sync Configuration (Optional)
+SHARED_KNOWLEDGE_VERSION=1.0.0
+SYNC_CHECK_INTERVAL=300000
+SYNC_WARNING_THRESHOLD=1800000
+SYNC_CRITICAL_THRESHOLD=3600000
 
-**Response:**
-```json
-{
-  "status": "healthy",
-  "service": "gateway",
-  "timestamp": "2024-01-15T10:30:00.000Z",
-  "dependencies": {
-    "auth": {
-      "status": "healthy",
-      "responseTime": 45,
-      "lastChecked": "2024-01-15T10:30:00.000Z"
-    },
-    "comment": {
-      "status": "healthy", 
-      "responseTime": 120,
-      "lastChecked": "2024-01-15T10:30:00.000Z"
-    }
-  },
-  "summary": {
-    "totalServices": 4,
-    "healthyInstances": 4,
-    "unhealthyInstances": 0,
-    "openCircuitBreakers": 0
-  }
-}
+# Features (Optional - all enabled by default)
+FEATURE_SYNC_MONITORING=true
+FEATURE_ORCHESTRATION=true
+ORCHESTRATION_CACHE_ENABLED=true
+CIRCUIT_BREAKER_ENABLED=true
 ```
 
-#### GET /metrics
-Prometheus-compatible metrics endpoint.
+### Development Mode
 
-**Response:** Plain text Prometheus metrics
+```bash
+# Install dependencies
+npm install
 
-**Headers:**
-- `Content-Type: text/plain; version=0.0.4; charset=utf-8`
+# Start with enhanced features
+npm run dev:enhanced
 
-### Service Management
+# Check sync status
+npm run sync:check
 
-#### GET /api/gateway/services
-List all registered services and their status.
-
-**Authentication:** Required (Bearer Token)
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "auth": {
-      "name": "auth",
-      "totalInstances": 1,
-      "healthyInstances": 1,
-      "instances": [
-        {
-          "id": "auth-0",
-          "url": "http://auth-service:3001",
-          "status": "healthy",
-          "lastHealthCheck": "2024-01-15T10:30:00.000Z",
-          "responseTime": 45,
-          "circuitBreakerState": "closed",
-          "requestCount": 150,
-          "errorCount": 2
-        }
-      ]
-    }
-  },
-  "metadata": {
-    "timestamp": "2024-01-15T10:30:00.000Z",
-    "requestId": "req_123456789",
-    "service": "gateway"
-  }
-}
+# View sync status via API
+npm run sync:status
 ```
 
-#### GET /api/gateway/stats
-Gateway performance and health statistics.
+## 📊 New API Endpoints
 
-**Authentication:** Required (Bearer Token)
+### Sync Monitoring
+```bash
+# Check overall sync status
+GET /health/sync
 
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "totalServices": 4,
-    "totalInstances": 6,
-    "healthyInstances": 6,
-    "unhealthyInstances": 0,
-    "openCircuitBreakers": 0,
-    "halfOpenCircuitBreakers": 0,
-    "lastHealthCheck": "2024-01-15T10:30:00.000Z",
-    "services": {
-      "auth": {
-        "instances": 1,
-        "healthy": 1,
-        "unhealthy": 0,
-        "avgResponseTime": 45,
-        "totalRequests": 150,
-        "totalErrors": 2
-      }
-    },
-    "proxy": {
-      "activeRetries": 0,
-      "maxRetryAttempts": 3,
-      "retryDelay": 1000
-    },
-    "errors": {
-      "errorRates": {},
-      "thresholds": {
-        "warning": 0.05,
-        "critical": 0.15
-      }
-    }
-  }
-}
+# Detailed sync information
+GET /api/gateway/sync/status
+
+# Force sync check (admin only)
+POST /api/gateway/sync/force
 ```
 
-## Proxied Service Endpoints
+### Service Orchestration
+```bash
+# User dashboard (orchestrated)
+GET /api/orchestration/user/:userId/dashboard
 
-The gateway proxies requests to the following services:
-
-### Authentication Service (/api/auth/*)
-- **POST /api/auth/login** - User authentication
-- **POST /api/auth/register** - User registration  
-- **GET /api/auth/verify** - Token verification
-- **POST /api/auth/logout** - User logout
-- **PUT /api/auth/profile** - Update user profile
-
-### Comment Processing Service (/api/comments/*)
-- **POST /api/comments/categorize** - Submit comments for categorization
-- **GET /api/comments/job/{jobId}/status** - Check processing status
-- **GET /api/comments/job/{jobId}/results** - Get categorization results
-- **POST /api/comments/job/{jobId}/cancel** - Cancel processing job
-
-### Industry Configuration Service (/api/industries/*)
-- **GET /api/industries** - List available industries
-- **GET /api/industries/{industry}/categories** - Get industry categories
-- **GET /api/industries/{industry}/factors** - Get NPS factors
-- **PUT /api/industries/{industry}/config** - Update industry configuration
-
-### NPS Analytics Service (/api/nps/*)
-- **POST /api/nps/upload** - Upload NPS data
-- **GET /api/nps/dashboard/{userId}** - Get NPS dashboard
-- **GET /api/nps/trends/{userId}** - Get NPS trends
-- **GET /api/nps/customer-journey/{userId}** - Get customer journey data
-
-## Authentication
-
-### JWT Bearer Token
-Most endpoints require authentication using JWT Bearer tokens.
-
-**Header:**
-```
-Authorization: Bearer <jwt_token>
+# Gateway service stats
+GET /api/gateway/stats
 ```
 
-**Token Structure:**
-```json
-{
-  "userId": "user-123",
-  "email": "user@example.com", 
-  "roles": ["user"],
-  "industry": "SaaS/Technology",
-  "exp": 1705392600,
-  "iat": 1705306200
-}
+### Enhanced Health Checks
+```bash
+# Basic health (unchanged)
+GET /health
+
+# Enhanced health with sync status
+GET /health/services
+
+# Service management
+GET /api/gateway/services
 ```
 
-### API Key Authentication
-Some endpoints support API key authentication for service-to-service communication.
+## 🔍 Monitoring & Debugging
 
-**Header:**
-```
-X-API-Key: sk-your-api-key-here
-```
+### Sync Status Check Script
+```bash
+# Check all services
+node scripts/check-sync.js
 
-## Error Handling
+# Gateway only
+node scripts/check-sync.js --gateway-only
 
-All API responses follow a consistent error format:
+# Individual services only
+node scripts/check-sync.js --services-only
 
-### Success Response
-```json
-{
-  "success": true,
-  "data": { ... },
-  "metadata": {
-    "timestamp": "2024-01-15T10:30:00.000Z",
-    "requestId": "req_123456789", 
-    "service": "gateway"
-  }
-}
+# JSON output
+node scripts/check-sync.js --json
 ```
 
-### Error Response
-```json
-{
-  "success": false,
-  "error": {
-    "code": "ERROR_CODE",
-    "message": "Human-readable error message",
-    "suggestion": "Suggested action to resolve the error",
-    "details": "Additional error details (optional)"
-  },
-  "metadata": {
-    "timestamp": "2024-01-15T10:30:00.000Z",
-    "requestId": "req_123456789",
-    "service": "gateway"
-  }
-}
+### Log Levels
+```bash
+# Development - detailed logs
+LOG_LEVEL=debug
+
+# Production - essential logs only
+LOG_LEVEL=info
+
+# Enable colored output
+ENABLE_COLORS=true
 ```
 
-### Common Error Codes
+## 🏗 Architecture Enhancements
 
-| Code | Status | Description |
-|------|--------|-------------|
-| `AUTHENTICATION_REQUIRED` | 401 | Authentication token required |
-| `INVALID_CREDENTIALS` | 401 | Invalid or expired token |
-| `INSUFFICIENT_PERMISSIONS` | 403 | User lacks required permissions |
-| `RESOURCE_NOT_FOUND` | 404 | Endpoint or resource not found |
-| `VALIDATION_ERROR` | 400 | Request validation failed |
-| `RATE_LIMIT_EXCEEDED` | 429 | Too many requests |
-| `SERVICE_UNAVAILABLE` | 503 | Backend service unavailable |
-| `GATEWAY_TIMEOUT` | 504 | Request to backend service timed out |
-| `CIRCUIT_BREAKER_OPEN` | 503 | Service circuit breaker is open |
-
-## Request/Response Headers
-
-### Standard Request Headers
-- `Content-Type: application/json` - For POST/PUT requests
-- `Authorization: Bearer <token>` - Authentication token
-- `X-API-Key: <key>` - API key (alternative authentication)
-- `X-Request-ID: <id>` - Optional request tracking ID
-- `User-Agent: <agent>` - Client identification
-
-### Standard Response Headers
-- `X-Request-ID: <id>` - Request tracking ID
-- `X-Response-Time: <ms>ms` - Response time in milliseconds
-- `X-Served-By: <service>` - Backend service that handled the request
-- `X-Gateway-Service: claude-analysis-gateway` - Gateway identification
-- `X-Content-Type-Options: nosniff` - Security header
-- `Cache-Control: <policy>` - Caching policy
-
-## Rate Limiting
-
-The gateway implements rate limiting to protect backend services:
-
-### Rate Limit Tiers
-- **General API**: 100 requests per 15 minutes per IP
-- **Authentication**: 5 requests per 15 minutes per IP
-- **Comment Processing**: 10 jobs per hour per user
-- **File Upload**: 5 files per minute per user
-
-### Rate Limit Headers
-When rate limiting is active, responses include:
-- `X-RateLimit-Limit: <limit>` - Request limit
-- `X-RateLimit-Remaining: <remaining>` - Remaining requests
-- `X-RateLimit-Reset: <timestamp>` - Reset time
-
-### Rate Limit Exceeded Response
-```json
-{
-  "success": false,
-  "error": {
-    "code": "RATE_LIMIT_EXCEEDED",
-    "message": "Too many requests",
-    "suggestion": "Please wait before making additional requests"
-  },
-  "metadata": {
-    "timestamp": "2024-01-15T10:30:00.000Z",
-    "requestId": "req_123456789",
-    "service": "gateway",
-    "retryAfter": 900
-  }
-}
+### Service Communication Flow
+```
+Client Request → Gateway → Enhanced Health Check
+                      ↓
+                Circuit Breaker Check
+                      ↓
+                Sync Status Validation
+                      ↓
+            Service Orchestration (if needed)
+                      ↓
+                 Proxy to Service
+                      ↓
+            Response + Sync Info Collection
 ```
 
-## CORS Support
-
-The gateway supports Cross-Origin Resource Sharing (CORS):
-
-### Allowed Origins
-- `https://claude-analysis.com` (Production)
-- `https://app.claude-analysis.com` (Production)
-- `http://localhost:3000` (Development)
-- `http://localhost:3001` (Development)
-
-### Supported Methods
-- GET, POST, PUT, PATCH, DELETE, OPTIONS
-
-### Allowed Headers
-- Content-Type, Authorization, X-Requested-With, X-API-Key, X-Request-ID
-
-## Circuit Breaker
-
-The gateway implements circuit breakers to handle service failures:
+### Sync Monitoring Flow
+```
+Gateway Timer → Check All Services → Collect Versions
+                      ↓
+              Compare with Expected Version
+                      ↓
+              Update Service Status
+                      ↓
+          Log Warnings/Alerts if Out of Sync
+```
 
 ### Circuit Breaker States
-- **Closed**: Normal operation, requests pass through
-- **Open**: Service is failing, requests are blocked
-- **Half-Open**: Testing if service has recovered
+```
+CLOSED → Requests pass through normally
+   ↓ (failures exceed threshold)
+OPEN → Requests fail fast
+   ↓ (timeout expires)
+HALF_OPEN → Test single request
+   ↓ (success)        ↓ (failure)
+CLOSED             OPEN
+```
 
-### Circuit Breaker Configuration
-- **Failure Threshold**: 5 consecutive failures
-- **Timeout**: 60 seconds before moving to half-open
-- **Reset Timeout**: 30 seconds in half-open state
+## 🚦 Configuration Examples
 
-## Development Features
-
-Development-only endpoints for testing and debugging:
-
-### POST /api/gateway/services/{serviceName}/register
-Register a new service instance (development only).
-
-### DELETE /api/gateway/services/{serviceName}
-Unregister a service (development only).
-
-### POST /api/gateway/health-check
-Force health check execution (development only).
-
-### GET /api/gateway/services/{serviceName}/discover
-Test service discovery (development only).
-
-## Monitoring and Observability
-
-### Metrics Available
-- HTTP request duration and count
-- Service proxy metrics
-- Circuit breaker state
-- Rate limiting hits
-- Authentication metrics
-- Error rates by endpoint
-
-### Log Format
-All logs follow structured JSON format:
-```json
+### Production Configuration
+```javascript
+// Recommended production settings
 {
-  "timestamp": "2024-01-15T10:30:00.000Z",
-  "level": "info",
-  "service": "gateway",
-  "message": "Request completed",
-  "metadata": {
-    "request": {
-      "method": "GET",
-      "path": "/api/status",
-      "responseTime": 45
-    },
-    "user": {
-      "userId": "user-123"
-    }
+  sync: {
+    checkInterval: 300000,      // 5 minutes
+    warningThreshold: 1800000,  // 30 minutes
+    criticalThreshold: 3600000, // 1 hour
+    autoUpdate: false           // Manual updates only
+  },
+  orchestration: {
+    timeout: 10000,             // 10 seconds
+    cacheExpiry: 300000,        // 5 minutes
+    retryAttempts: 3
+  },
+  circuitBreaker: {
+    failureThreshold: 5,        // 5 failures
+    resetTimeout: 60000         // 1 minute
   }
 }
 ```
 
-### Health Check Endpoints Summary
-- `/health` - Basic gateway health
-- `/health/services` - Backend service health
-- `/health/monitoring` - Monitoring system health
-- `/metrics` - Prometheus metrics
-
-## SDK and Client Examples
-
-### JavaScript/Node.js
+### Development Configuration
 ```javascript
-const axios = require('axios');
-
-const client = axios.create({
-  baseURL: 'https://api.claude-analysis.com',
-  timeout: 30000,
-  headers: {
-    'Authorization': 'Bearer your-jwt-token',
-    'Content-Type': 'application/json'
+// Recommended development settings
+{
+  sync: {
+    checkInterval: 60000,       // 1 minute
+    warningThreshold: 300000,   // 5 minutes
+    criticalThreshold: 600000,  // 10 minutes
+    autoUpdate: true            // Auto-update in dev
+  },
+  orchestration: {
+    timeout: 5000,              // 5 seconds
+    cacheExpiry: 60000,         // 1 minute
+    retryAttempts: 2
   }
-});
-
-// Example: Submit comments for categorization
-const response = await client.post('/api/comments/categorize', {
-  comments: ['Great product!', 'Needs improvement'],
-  apiKey: 'sk-your-api-key',
-  industry: 'SaaS/Technology'
-});
+}
 ```
 
-### Python
-```python
-import requests
-
-class ClaudeAnalysisClient:
-    def __init__(self, base_url, token):
-        self.base_url = base_url
-        self.session = requests.Session()
-        self.session.headers.update({
-            'Authorization': f'Bearer {token}',
-            'Content-Type': 'application/json'
-        })
-    
-    def categorize_comments(self, comments, api_key, industry):
-        response = self.session.post(
-            f'{self.base_url}/api/comments/categorize',
-            json={
-                'comments': comments,
-                'apiKey': api_key, 
-                'industry': industry
-            }
-        )
-        return response.json()
-```
-
-### cURL Examples
-```bash
-# Health check
-curl -X GET https://api.claude-analysis.com/health
-
-# Authenticate
-curl -X POST https://api.claude-analysis.com/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"user@example.com","password":"password"}'
-
-# Submit comments
-curl -X POST https://api.claude-analysis.com/api/comments/categorize \
-  -H "Authorization: Bearer your-jwt-token" \
-  -H "Content-Type: application/json" \
-  -d '{"comments":["Test comment"],"apiKey":"sk-key"}'
-```
-
-## Support and Troubleshooting
+## 🔧 Troubleshooting
 
 ### Common Issues
 
-1. **401 Unauthorized**
-   - Check if token is provided and valid
-   - Verify token hasn't expired
-   - Ensure correct authorization header format
+**Services showing as out-of-sync:**
+```bash
+# Check specific service
+curl http://your-service.com/api/shared-knowledge/status
 
-2. **503 Service Unavailable** 
-   - Backend service may be down
-   - Check circuit breaker status
-   - Verify service health endpoints
+# Force sync check
+curl -X POST http://localhost:3000/api/gateway/sync/force \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+```
 
-3. **504 Gateway Timeout**
-   - Request to backend service timed out
-   - Check service performance
-   - Consider reducing request size
+**Circuit breaker stuck open:**
+```bash
+# Check circuit breaker status
+curl http://localhost:3000/api/gateway/stats
 
-### Debug Headers
-Include `X-Debug: true` header (development only) for additional debugging information.
+# Reset circuit breaker (admin)
+curl -X POST http://localhost:3000/api/gateway/circuit-breaker/reset \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -d '{"service": "service-name"}'
+```
 
-### Contact Information
-- **Support Email**: support@claude-analysis.com
-- **Documentation**: https://docs.claude-analysis.com
-- **Status Page**: https://status.claude-analysis.com
+**High response times:**
+```bash
+# Check orchestration cache stats
+curl http://localhost:3000/api/gateway/stats | jq '.orchestration'
+
+# Clear cache if needed
+curl -X DELETE http://localhost:3000/api/gateway/cache \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
+```
+
+### Debug Mode
+```bash
+# Enable verbose logging
+LOG_LEVEL=debug FEATURE_REQUEST_TRACING=true npm run dev
+
+# Monitor sync in real-time
+watch -n 30 'npm run sync:check --services-only'
+```
+
+## 📈 Performance Improvements
+
+### Caching Strategy
+- **User Data**: 10 minutes TTL
+- **Dashboard**: 2 minutes TTL
+- **Industries**: 15 minutes TTL
+- **Recent Jobs**: 2 minutes TTL
+
+### Request Optimization
+- **Parallel Service Calls**: Multiple services called simultaneously
+- **Circuit Breaker**: Fast failure for unhealthy services
+- **Request Pooling**: Reuse connections where possible
+- **Gzip Compression**: Automatic response compression
+
+### Memory Management
+- **Automatic Cache Cleanup**: Expired entries removed every minute
+- **Token Cache**: JWT tokens cached for 5 minutes
+- **Circuit Breaker Reset**: Failure counts decay over time
+
+## 🔒 Security Enhancements
+
+### Enhanced Authentication
+- **JWT Token Caching**: Reduce auth service load
+- **Role-Based Access**: Granular permission control
+- **Request Tracing**: Full audit trail
+- **Rate Limiting**: Per-user and per-endpoint limits
+
+### Service-to-Service Security
+- **Request Signing**: Gateway signs all outbound requests
+- **Header Forwarding**: Secure context propagation
+- **API Key Validation**: Service authentication
+- **CORS Configuration**: Precise origin control
+
+## 📝 Migration Guide
+
+### From Basic Gateway
+
+1. **Update Environment Variables**:
+   ```bash
+   # Add sync configuration
+   SHARED_KNOWLEDGE_VERSION=1.0.0
+   SYNC_CHECK_INTERVAL=300000
+   ```
+
+2. **Update Service Dependencies**:
+   ```bash
+   npm install  # Will install enhanced dependencies
+   ```
+
+3. **Test Enhanced Features**:
+   ```bash
+   npm run sync:check
+   npm run dev:enhanced
+   ```
+
+4. **Deploy with Zero Downtime**:
+   ```bash
+   # Services can be updated one at a time
+   # Gateway handles mixed versions gracefully
+   ```
+
+### Service Requirements
+
+For full sync monitoring, services should implement:
+```bash
+# Health endpoint with version info
+GET /health
+Response: { "status": "healthy", "sharedKnowledgeVersion": "1.0.0" }
+
+# Optional: Dedicated sync endpoint
+GET /api/shared-knowledge/status
+Response: { "version": "1.0.0", "lastUpdated": "2024-01-15T10:30:00Z" }
+```
+
+## 🤝 Contributing
+
+### Development Setup
+```bash
+git clone <repository>
+cd gateway-service
+npm install
+cp .env.example .env
+# Update .env with your service URLs
+npm run dev:enhanced
+```
+
+### Testing
+```bash
+npm test                # Unit tests
+npm run test:coverage   # Coverage report
+npm run test:integration # Integration tests
+npm run validate        # Lint + test
+```
+
+This enhanced gateway maintains the small project size while significantly improving service coordination, monitoring, and reliability. The sync monitoring ensures all services stay coordinated, while orchestration provides intelligent request handling across the microservices architecture.
