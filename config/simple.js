@@ -8,9 +8,9 @@ const config = {
   port: parseInt(process.env.PORT) || 3000,
   
   services: {
-    auth: process.env.AUTH_SERVICE_URL || 'https://your-auth-service.herokuapp.com',
-    comment: process.env.COMMENT_SERVICE_URL || 'https://your-comment-service.herokuapp.com',
-    industry: process.env.INDUSTRY_SERVICE_URL || 'https://your-industry-service.herokuapp.com',
+    auth: process.env.AUTH_SERVICE_URL || 'https://auth-service-voice-0add8d339257.herokuapp.com',
+    comment: process.env.COMMENT_SERVICE_URL || 'https://comment-serivce-1d430c50b7ad.herokuapp.com',
+    industry: process.env.INDUSTRY_SERVICE_URL || 'https://industry-service-voice-f7d40a18c50e.herokuapp.com/',
     nps: process.env.NPS_SERVICE_URL || 'https://your-nps-service.herokuapp.com'
   },
   
