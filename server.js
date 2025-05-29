@@ -1,10 +1,11 @@
-// gateway-service/server.js - Production-ready enhanced version
+// gateway-service/server.js - Enhanced with active health checks
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
+const axios = require('axios');
 const SimpleAuth = require('./middleware/simpleAuth');
 const config = require('./config/simple');
 const logger = require('./utils/simpleLogger');
@@ -12,8 +13,8 @@ const logger = require('./utils/simpleLogger');
 const app = express();
 const auth = new SimpleAuth();
 
-// Enhanced service health tracking (minimal)
-class SimpleServiceHealth {
+// Enhanced service health tracking with ACTIVE health checks
+class ActiveServiceHealth {
   constructor() {
     this.services = config.services;
     this.serviceStatus = new Map();
@@ -30,10 +31,91 @@ class SimpleServiceHealth {
         url: this.services[serviceName],
         status: 'unknown',
         lastCheck: null,
+        lastSuccess: null,
         consecutiveFailures: 0,
-        responseTime: null
+        responseTime: null,
+        healthCheckEnabled: true
       });
     });
+    
+    // Start active health checking
+    this.startActiveHealthChecks();
+  }
+
+  startActiveHealthChecks() {
+    // Initial health check
+    this.checkAllServicesHealth();
+    
+    // Periodic health checks every 2 minutes
+    this.healthCheckTimer = setInterval(() => {
+      this.checkAllServicesHealth();
+    }, 2 * 60 * 1000); // 2 minutes
+    
+    logger.info('Active health checks started (every 2 minutes)');
+  }
+
+  async checkAllServicesHealth() {
+    logger.debug('Performing active health checks...');
+    
+    const promises = Object.keys(this.services).map(serviceName =>
+      this.checkServiceHealth(serviceName)
+    );
+    
+    await Promise.allSettled(promises);
+  }
+
+  async checkServiceHealth(serviceName) {
+    const serviceInfo = this.serviceStatus.get(serviceName);
+    if (!serviceInfo || !serviceInfo.healthCheckEnabled) return;
+    
+    const startTime = Date.now();
+    
+    try {
+      const response = await axios.get(`${serviceInfo.url}/health`, {
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'Gateway-Health-Check/1.1.0',
+          'X-Gateway-Request': 'true'
+        }
+      });
+      
+      const responseTime = Date.now() - startTime;
+      const isHealthy = response.status === 200;
+      
+      serviceInfo.status = isHealthy ? 'healthy' : 'unhealthy';
+      serviceInfo.lastCheck = new Date().toISOString();
+      serviceInfo.responseTime = responseTime;
+      
+      if (isHealthy) {
+        serviceInfo.lastSuccess = serviceInfo.lastCheck;
+        serviceInfo.consecutiveFailures = 0;
+        logger.debug(`Health check ${serviceName}: healthy (${responseTime}ms)`);
+      } else {
+        serviceInfo.consecutiveFailures++;
+        logger.warn(`Health check ${serviceName}: unhealthy (HTTP ${response.status})`);
+      }
+      
+    } catch (error) {
+      const responseTime = Date.now() - startTime;
+      
+      serviceInfo.status = 'unhealthy';
+      serviceInfo.lastCheck = new Date().toISOString();
+      serviceInfo.responseTime = responseTime;
+      serviceInfo.consecutiveFailures++;
+      
+      // Log different error types
+      if (error.code === 'ECONNREFUSED') {
+        logger.warn(`Health check ${serviceName}: connection refused`);
+      } else if (error.code === 'ETIMEDOUT') {
+        logger.warn(`Health check ${serviceName}: timeout`);
+      } else if (error.response && error.response.status === 404) {
+        logger.debug(`Health check ${serviceName}: /health endpoint not found`);
+        // Don't mark as unhealthy if just missing /health endpoint
+        serviceInfo.status = 'unknown';
+      } else {
+        logger.warn(`Health check ${serviceName}: ${error.message}`);
+      }
+    }
   }
 
   recordResponse(serviceName, success, responseTime = null) {
@@ -46,14 +128,16 @@ class SimpleServiceHealth {
 
     const serviceInfo = this.serviceStatus.get(serviceName);
     if (serviceInfo) {
-      serviceInfo.lastCheck = new Date().toISOString();
-      serviceInfo.responseTime = responseTime;
+      // Update from proxy response
+      if (responseTime) {
+        serviceInfo.responseTime = responseTime;
+      }
       
       if (success) {
         serviceInfo.status = 'healthy';
         serviceInfo.consecutiveFailures = 0;
+        serviceInfo.lastSuccess = new Date().toISOString();
       } else {
-        serviceInfo.status = 'unhealthy';
         serviceInfo.consecutiveFailures++;
       }
     }
@@ -67,6 +151,7 @@ class SimpleServiceHealth {
         url: info.url,
         status: info.status,
         lastCheck: info.lastCheck,
+        lastSuccess: info.lastSuccess,
         consecutiveFailures: info.consecutiveFailures,
         responseTime: info.responseTime
       };
@@ -102,9 +187,16 @@ class SimpleServiceHealth {
       });
     };
   }
+
+  cleanup() {
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
+    }
+  }
 }
 
-const health = new SimpleServiceHealth();
+const health = new ActiveServiceHealth();
 
 // Basic middleware
 app.use(express.json({ limit: '10mb' }));
@@ -200,33 +292,43 @@ app.get('/health', (req, res) => {
     features: {
       syncMonitoring: true,
       enhancedLogging: true,
-      requestTracing: true
+      requestTracing: true,
+      activeHealthChecks: true
     }
   });
 });
 
 app.get('/health/services', health.checkServices());
 
-// Sync status endpoint (minimal implementation)
+// IMPROVED sync status endpoint with active health data
 app.get('/health/sync', (req, res) => {
   const services = health.getServiceStatus();
   const healthyServices = Object.values(services).filter(s => s.status === 'healthy');
+  const unknownServices = Object.values(services).filter(s => s.status === 'unknown');
+  
+  const overallStatus = healthyServices.length === Object.keys(services).length ? 'healthy' :
+                       unknownServices.length === Object.keys(services).length ? 'unknown' : 'degraded';
   
   res.json({
     success: true,
     data: {
-      overallStatus: healthyServices.length === Object.keys(services).length ? 'healthy' : 'degraded',
+      overallStatus,
       lastGlobalCheck: new Date().toISOString(),
       expectedVersion: '1.0.0',
       services: Object.values(services).map(service => ({
         name: service.name,
         currentVersion: '1.0.0',
         expectedVersion: '1.0.0',
-        status: service.status === 'healthy' ? 'in-sync' : 'unknown',
+        status: service.status === 'healthy' ? 'in-sync' : 
+                service.status === 'unknown' ? 'unknown' : 'out-of-sync',
         lastCheck: service.lastCheck,
+        lastSuccess: service.lastSuccess,
         delayMinutes: 0,
+        responseTime: service.responseTime,
         recommendation: service.status === 'healthy' ? 
           'Service is properly synchronized' : 
+          service.status === 'unknown' ?
+          'Service health status unknown - may need /health endpoint' :
           'Check service health and connectivity'
       }))
     },
@@ -236,6 +338,36 @@ app.get('/health/sync', (req, res) => {
     }
   });
 });
+
+// Force health check endpoint
+app.post('/api/gateway/health-check', (req, res) => {
+  logger.info('Manual health check triggered');
+  
+  health.checkAllServicesHealth().then(() => {
+    const services = health.getServiceStatus();
+    res.json({
+      success: true,
+      message: 'Health check completed',
+      data: {
+        services,
+        timestamp: new Date().toISOString()
+      }
+    });
+  }).catch(error => {
+    logger.error('Manual health check failed', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'HEALTH_CHECK_FAILED',
+        message: 'Health check failed',
+        details: error.message
+      }
+    });
+  });
+});
+
+// Rest of the server.js code remains the same...
+// (Enhanced gateway management endpoints, service proxy, routes, etc.)
 
 // Enhanced gateway management endpoints
 app.get('/api/gateway/services', auth.requireAuth(), (req, res) => {
@@ -250,7 +382,8 @@ app.get('/api/gateway/services', auth.requireAuth(), (req, res) => {
         uptime: Math.floor(process.uptime()),
         requestsHandled: stats.totalRequests,
         errorRate: stats.errorRate,
-        version: '1.1.0'
+        version: '1.1.0',
+        activeHealthChecks: true
       }
     },
     metadata: {
@@ -270,7 +403,8 @@ app.get('/api/gateway/stats', auth.requireAuth(), (req, res) => {
       ...stats,
       uptime: Math.floor(process.uptime()),
       memoryUsage: process.memoryUsage(),
-      version: '1.1.0'
+      version: '1.1.0',
+      activeHealthChecks: true
     },
     metadata: {
       timestamp: new Date().toISOString(),
@@ -280,7 +414,7 @@ app.get('/api/gateway/stats', auth.requireAuth(), (req, res) => {
   });
 });
 
-// Enhanced service proxy
+// Enhanced service proxy (same as before)
 const createEnhancedServiceProxy = (serviceName, targetUrl) => {
   return createProxyMiddleware({
     target: targetUrl,
@@ -362,7 +496,7 @@ const createEnhancedServiceProxy = (serviceName, targetUrl) => {
   });
 };
 
-// Service routes
+// Service routes (same as before)
 app.use('/api/auth', 
   createRateLimit(15 * 60 * 1000, 20, 'Too many authentication attempts'),
   createEnhancedServiceProxy('auth', config.services.auth)
@@ -391,7 +525,7 @@ app.use(express.static('public', {
   etag: true
 }));
 
-// 404 handler for API routes
+// 404 and error handlers (same as before)
 app.use('/api/*', (req, res) => {
   res.status(404).json({
     success: false,
@@ -408,7 +542,6 @@ app.use('/api/*', (req, res) => {
   });
 });
 
-// SPA fallback
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'), (err) => {
     if (err) {
@@ -428,7 +561,6 @@ app.get('*', (req, res) => {
   });
 });
 
-// Global error handler
 app.use((err, req, res, next) => {
   logger.error('Unhandled error', {
     error: err.message,
@@ -457,15 +589,17 @@ app.use((err, req, res, next) => {
 
 const PORT = config.port;
 const server = app.listen(PORT, () => {
-  logger.info(`Enhanced Gateway started on port ${PORT}`);
+  logger.info(`Enhanced Gateway with Active Health Checks started on port ${PORT}`);
   logger.info(`Environment: ${process.env.NODE_ENV || 'production'}`);
   logger.info(`Services configured: ${Object.keys(config.services).join(', ')}`);
-  logger.info(`Features: Enhanced logging, Request tracing, Service health monitoring`);
+  logger.info(`Features: Enhanced logging, Request tracing, Active health monitoring`);
 });
 
 // Graceful shutdown
 const gracefulShutdown = (signal) => {
   logger.info(`${signal} received, shutting down gracefully`);
+  
+  health.cleanup();
   
   server.close(() => {
     logger.info('Gateway server closed cleanly');
