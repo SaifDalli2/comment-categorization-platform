@@ -64,59 +64,85 @@ class ActiveServiceHealth {
     await Promise.allSettled(promises);
   }
 
-  async checkServiceHealth(serviceName) {
-    const serviceInfo = this.serviceStatus.get(serviceName);
-    if (!serviceInfo || !serviceInfo.healthCheckEnabled) return;
-    
-    const startTime = Date.now();
-    
-    try {
-      const response = await axios.get(`${serviceInfo.url}/health`, {
-        timeout: 10000,
-        headers: {
-          'User-Agent': 'Gateway-Health-Check/1.1.0',
-          'X-Gateway-Request': 'true'
-        }
-      });
-      
-      const responseTime = Date.now() - startTime;
-      const isHealthy = response.status === 200;
-      
-      serviceInfo.status = isHealthy ? 'healthy' : 'unhealthy';
-      serviceInfo.lastCheck = new Date().toISOString();
-      serviceInfo.responseTime = responseTime;
-      
-      if (isHealthy) {
-        serviceInfo.lastSuccess = serviceInfo.lastCheck;
-        serviceInfo.consecutiveFailures = 0;
-        logger.debug(`Health check ${serviceName}: healthy (${responseTime}ms)`);
-      } else {
-        serviceInfo.consecutiveFailures++;
-        logger.warn(`Health check ${serviceName}: unhealthy (HTTP ${response.status})`);
+async checkServiceHealth(serviceName) {
+  const serviceInfo = this.serviceStatus.get(serviceName);
+  if (!serviceInfo || !serviceInfo.healthCheckEnabled) return;
+  
+  const startTime = Date.now();
+  
+  try {
+    const response = await axios.get(`${serviceInfo.url}/health`, {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Gateway-Health-Check/1.1.0',
+        'X-Gateway-Request': 'true'
       }
+    });
+    
+    const responseTime = Date.now() - startTime;
+    let isHealthy = false;
+    
+    // ENHANCED: Better health response parsing for different service formats
+    if (response.status === 200 && response.data) {
+      const data = response.data;
       
-    } catch (error) {
-      const responseTime = Date.now() - startTime;
-      
-      serviceInfo.status = 'unhealthy';
-      serviceInfo.lastCheck = new Date().toISOString();
-      serviceInfo.responseTime = responseTime;
-      serviceInfo.consecutiveFailures++;
-      
-      // Log different error types
-      if (error.code === 'ECONNREFUSED') {
-        logger.warn(`Health check ${serviceName}: connection refused`);
-      } else if (error.code === 'ETIMEDOUT') {
-        logger.warn(`Health check ${serviceName}: timeout`);
-      } else if (error.response && error.response.status === 404) {
-        logger.debug(`Health check ${serviceName}: /health endpoint not found`);
-        // Don't mark as unhealthy if just missing /health endpoint
-        serviceInfo.status = 'unknown';
-      } else {
-        logger.warn(`Health check ${serviceName}: ${error.message}`);
+      if (typeof data === 'object') {
+        // Standard format: {status: "healthy"}
+        if (data.status === 'healthy' || data.status === 'ok') {
+          isHealthy = true;
+        }
+        // Alternative format: {health: "healthy"}
+        else if (data.health === 'healthy' || data.health === 'ok') {
+          isHealthy = true;
+        }
+        // Complex format like industry service: has status, timestamp, version
+        else if (data.status && data.timestamp && data.version && !data.error) {
+          isHealthy = true;
+        }
+        // Any object response without explicit error is considered healthy
+        else if (!data.error && !data.status) {
+          isHealthy = true;
+        }
+      }
+      // String responses containing "healthy"
+      else if (typeof data === 'string' && data.toLowerCase().includes('healthy')) {
+        isHealthy = true;
       }
     }
+    
+    serviceInfo.status = isHealthy ? 'healthy' : 'unhealthy';
+    serviceInfo.lastCheck = new Date().toISOString();
+    serviceInfo.responseTime = responseTime;
+    
+    if (isHealthy) {
+      serviceInfo.lastSuccess = serviceInfo.lastCheck;
+      serviceInfo.consecutiveFailures = 0;
+      logger.debug(`Health check ${serviceName}: healthy (${responseTime}ms)`);
+    } else {
+      serviceInfo.consecutiveFailures++;
+      logger.warn(`Health check ${serviceName}: unhealthy - Response: ${JSON.stringify(response.data).substring(0, 100)}`);
+    }
+    
+  } catch (error) {
+    const responseTime = Date.now() - startTime;
+    
+    serviceInfo.status = 'unhealthy';
+    serviceInfo.lastCheck = new Date().toISOString();
+    serviceInfo.responseTime = responseTime;
+    serviceInfo.consecutiveFailures++;
+    
+    if (error.code === 'ECONNREFUSED') {
+      logger.warn(`Health check ${serviceName}: connection refused`);
+    } else if (error.code === 'ETIMEDOUT') {
+      logger.warn(`Health check ${serviceName}: timeout`);
+    } else if (error.response && error.response.status === 404) {
+      logger.debug(`Health check ${serviceName}: /health endpoint not found`);
+      serviceInfo.status = 'unknown';
+    } else {
+      logger.warn(`Health check ${serviceName}: ${error.message}`);
+    }
   }
+}
 
   recordResponse(serviceName, success, responseTime = null) {
     this.stats.totalRequests++;
