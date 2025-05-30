@@ -1,64 +1,50 @@
-// gateway-service/server.js - Enhanced Gateway Server (Fixed)
+// gateway-service/server.js - Fixed Service Integration
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
-
-// Keep existing imports
 const SimpleAuth = require('./middleware/simpleAuth');
 const SimpleHealth = require('./services/simpleHealth');
 const config = require('./config/simple');
 const logger = require('./utils/simpleLogger');
 
-// NEW: Add enhanced service components
-const { ServiceRegistry, EnhancedAuth } = require('./src/services/ServiceRegistry');
-
 const app = express();
-
-// Initialize components
 const auth = new SimpleAuth();
 const health = new SimpleHealth();
-const serviceRegistry = new ServiceRegistry();
-const enhancedAuth = new EnhancedAuth(serviceRegistry);
 
-// Trust proxy (important for Heroku)
+// Trust proxy for Heroku
 app.set('trust proxy', 1);
 
 // Basic middleware
 app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
 
-// Enhanced security
+// Security
 app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'", "wss:", "https:"]
-    }
-  },
+  contentSecurityPolicy: false,
   crossOriginEmbedderPolicy: false
 }));
 
-// CORS configuration
 app.use(cors({
-  origin: config.security.corsOrigins,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (config.security.corsOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    logger.warn(`CORS origin rejected: ${origin}`);
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: [
-    'Content-Type', 
-    'Authorization', 
-    'X-Requested-With', 
-    'X-API-Key', 
-    'X-Request-ID'
-  ]
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key', 'X-Request-ID']
 }));
 
-// Enhanced rate limiting
+// Rate limiting with different tiers
 const createRateLimit = (windowMs, max, message) => {
   return rateLimit({
     windowMs,
@@ -73,51 +59,30 @@ const createRateLimit = (windowMs, max, message) => {
     },
     standardHeaders: true,
     legacyHeaders: false,
-    skip: (req) => req.path === '/health' || req.path.startsWith('/health/')
+    skip: (req) => {
+      // Skip rate limiting for health checks
+      return req.path === '/health' || req.path.startsWith('/health/');
+    }
   });
 };
 
-// Apply rate limits
+// Apply different rate limits to different endpoints
 app.use('/api/auth', createRateLimit(15 * 60 * 1000, 20, 'Too many authentication requests'));
-app.use('/api/comments/categorize', createRateLimit(60 * 60 * 1000, 50, 'Too many categorization requests'));
-app.use('/api/nps/upload', createRateLimit(60 * 60 * 1000, 10, 'Too many file uploads'));
-app.use('/', createRateLimit(15 * 60 * 1000, 100, 'Too many requests'));
+app.use('/api/comments', createRateLimit(15 * 60 * 1000, 50, 'Too many comment processing requests'));
+app.use(createRateLimit(15 * 60 * 1000, 100, 'Too many requests'));
 
-// Enhanced request logging - FIXED
+// Request logging and ID generation
 app.use((req, res, next) => {
-  req.id = req.headers['x-request-id'] || `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  req.startTime = Date.now(); // Add start time to request
+  const start = Date.now();
+  req.requestId = req.headers['x-request-id'] || `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   
-  // Set headers immediately when request starts
-  res.setHeader('X-Request-ID', req.id);
+  res.setHeader('X-Request-ID', req.requestId);
+  res.setHeader('X-Gateway-Service', 'claude-analysis-gateway');
   
-  const originalEnd = res.end;
-  res.end = function(...args) {
-    const duration = Date.now() - req.startTime;
-    
-    // Only set headers if they haven't been sent yet
-    if (!res.headersSent) {
-      res.setHeader('X-Response-Time', `${duration}ms`);
-    }
-    
-    const logData = {
-      method: req.method,
-      path: req.path,
-      statusCode: res.statusCode,
-      responseTime: `${duration}ms`,
-      requestId: req.id
-    };
-    
-    if (req.user) logData.userId = req.user.id;
-    
-    const level = res.statusCode >= 500 ? 'error' : 
-                  res.statusCode >= 400 ? 'warn' : 'info';
-    logger.log(level, `${req.method} ${req.path} ${res.statusCode}`, logData);
-    
-    // Call original end method
-    originalEnd.apply(this, args);
-  };
-  
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    logger.request(req, res, duration);
+  });
   next();
 });
 
@@ -128,167 +93,127 @@ app.get('/health', (req, res) => {
     service: 'gateway',
     timestamp: new Date().toISOString(),
     uptime: Math.floor(process.uptime()),
-    version: process.env.npm_package_version || '1.0.0',
-    environment: process.env.NODE_ENV || 'development'
+    version: process.env.npm_package_version || '1.0.1'
   });
 });
 
-app.get('/health/services', async (req, res) => {
-  try {
-    const legacyHealth = health.getOverallHealth();
-    const enhancedHealth = await serviceRegistry.healthCheckAll();
-    
-    const allHealthy = legacyHealth.healthy && 
-                      Object.values(enhancedHealth).every(h => h.healthy);
-    
-    res.status(allHealthy ? 200 : 503).json({
-      status: allHealthy ? 'healthy' : 'degraded',
-      service: 'gateway',
+app.get('/health/services', health.checkServices());
+
+app.get('/api/gateway/services', auth.optionalAuth(), (req, res) => {
+  const services = health.getServiceStatus();
+  res.json({
+    success: true,
+    data: services,
+    metadata: {
       timestamp: new Date().toISOString(),
-      dependencies: {
-        ...legacyHealth.services,
-        ...enhancedHealth
-      },
-      summary: {
-        totalServices: legacyHealth.totalServices,
-        healthyServices: legacyHealth.healthyServices,
-        unhealthyServices: legacyHealth.unhealthyServices
-      }
-    });
-  } catch (error) {
-    logger.error('Health check failed:', { error: error.message });
-    res.status(503).json({
-      status: 'unhealthy',
-      service: 'gateway',
-      timestamp: new Date().toISOString(),
-      error: 'Health check system failure'
-    });
-  }
+      requestId: req.requestId,
+      service: 'gateway'
+    }
+  });
 });
 
-// NEW: Enhanced gateway management endpoint
-app.get('/api/gateway/services', enhancedAuth.optionalAuth(), async (req, res) => {
-  try {
-    const serviceHealth = await serviceRegistry.healthCheckAll();
-    const authStats = enhancedAuth.getStats();
-    
-    res.json({
-      success: true,
-      data: {
-        services: serviceHealth,
-        gateway: {
-          uptime: Math.floor(process.uptime()),
-          version: process.env.npm_package_version || '1.0.0',
-          environment: process.env.NODE_ENV || 'development',
-          auth: authStats
-        }
-      },
-      metadata: {
-        timestamp: new Date().toISOString(),
-        requestId: req.id,
-        service: 'gateway'
-      }
-    });
-  } catch (error) {
-    logger.error('Gateway services endpoint failed:', { error: error.message });
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Failed to retrieve service information'
-      }
-    });
-  }
-});
-
-// Enhanced proxy factory - FIXED
-const createEnhancedProxy = (serviceName, targetUrl) => {
+// Enhanced service proxy factory with better error handling
+const createServiceProxy = (serviceName, targetUrl, pathRewrite = {}) => {
   return createProxyMiddleware({
     target: targetUrl,
     changeOrigin: true,
     timeout: 30000,
+    pathRewrite,
     
     onProxyReq: (proxyReq, req) => {
+      // Forward user context if authenticated
       if (req.user) {
-        proxyReq.setHeader('X-User-ID', req.user.userId || req.user.id);
+        proxyReq.setHeader('X-User-ID', req.user.id);
         proxyReq.setHeader('X-User-Email', req.user.email);
-        proxyReq.setHeader('X-User-Industry', req.user.industry || '');
-        
         if (req.user.roles && req.user.roles.length > 0) {
           proxyReq.setHeader('X-User-Roles', req.user.roles.join(','));
         }
+        if (req.user.industry) {
+          proxyReq.setHeader('X-User-Industry', req.user.industry);
+        }
       }
       
+      // Forward API key if present
+      if (req.apiKey) {
+        proxyReq.setHeader('X-API-Key', req.apiKey);
+      }
+      
+      // Gateway identification headers
       proxyReq.setHeader('X-Gateway-Request', 'true');
-      proxyReq.setHeader('X-Gateway-Version', '1.0.0');
-      proxyReq.setHeader('X-Request-ID', req.id);
+      proxyReq.setHeader('X-Gateway-Version', '1.0.1');
+      proxyReq.setHeader('X-Request-ID', req.requestId);
       proxyReq.setHeader('X-Service-Name', 'gateway');
       
-      if (req.ip) {
-        proxyReq.setHeader('X-Forwarded-For', req.ip);
+      // Ensure proper content type for JSON requests
+      if (req.body && Object.keys(req.body).length > 0) {
+        const bodyData = JSON.stringify(req.body);
+        proxyReq.setHeader('Content-Type', 'application/json');
+        proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
+        proxyReq.write(bodyData);
       }
       
-      logger.debug(`Proxying to ${serviceName}:`, {
-        method: req.method,
-        path: req.path,
-        userId: req.user?.id,
-        requestId: req.id
+      logger.debug(`Proxying ${req.method} ${req.path} to ${serviceName}`, {
+        target: targetUrl,
+        headers: {
+          'X-User-ID': proxyReq.getHeader('X-User-ID'),
+          'X-Request-ID': req.requestId
+        }
       });
     },
 
     onProxyRes: (proxyRes, req, res) => {
-      // Only set headers if they haven't been sent yet
-      if (!proxyRes.headersSent) {
-        proxyRes.headers['x-served-by'] = serviceName;
-        proxyRes.headers['x-gateway-service'] = 'claude-analysis-gateway';
-      }
+      // Add service identification headers
+      res.setHeader('X-Served-By', serviceName);
+      res.setHeader('X-Response-Time', `${Date.now() - req.startTime}ms`);
       
-      const success = proxyRes.statusCode < 400;
-      health.recordServiceResponse(serviceName, success);
+      // Record service health
+      health.recordServiceResponse(serviceName, proxyRes.statusCode < 400);
       
-      if (success) {
-        logger.debug(`Successful proxy to ${serviceName}:`, {
-          statusCode: proxyRes.statusCode,
-          requestId: req.id
-        });
-      }
+      logger.debug(`${serviceName} responded: ${proxyRes.statusCode}`, {
+        requestId: req.requestId,
+        statusCode: proxyRes.statusCode
+      });
     },
 
     onError: (err, req, res) => {
-      logger.error(`Proxy error for ${serviceName}:`, {
+      logger.error(`Proxy error for ${serviceName}`, {
         error: err.message,
-        path: req.path,
-        method: req.method,
-        requestId: req.id
+        requestId: req.requestId,
+        target: targetUrl,
+        path: req.path
       });
       
       health.recordServiceResponse(serviceName, false);
       
       if (res.headersSent) return;
       
-      let errorCode = 'SERVICE_UNAVAILABLE';
+      // Determine appropriate error response based on error type
       let statusCode = 503;
-      let suggestion = 'Please try again in a few moments';
+      let errorCode = 'SERVICE_UNAVAILABLE';
+      let message = `${serviceName} service is temporarily unavailable`;
       
       if (err.code === 'ECONNREFUSED') {
         errorCode = 'SERVICE_UNAVAILABLE';
-        suggestion = `${serviceName} service is currently unavailable`;
+        message = `Cannot connect to ${serviceName} service`;
       } else if (err.code === 'ETIMEDOUT') {
-        errorCode = 'GATEWAY_TIMEOUT';
         statusCode = 504;
-        suggestion = 'The request took too long to process';
+        errorCode = 'GATEWAY_TIMEOUT';
+        message = `Request to ${serviceName} service timed out`;
+      } else if (err.message.includes('ENOTFOUND')) {
+        errorCode = 'SERVICE_UNAVAILABLE';
+        message = `${serviceName} service hostname not found`;
       }
       
       res.status(statusCode).json({
         success: false,
         error: {
           code: errorCode,
-          message: `${serviceName} service error: ${err.message}`,
-          suggestion
+          message,
+          suggestion: 'Please try again in a few moments'
         },
         metadata: {
           timestamp: new Date().toISOString(),
-          requestId: req.id,
+          requestId: req.requestId,
           service: 'gateway',
           targetService: serviceName
         }
@@ -297,38 +222,122 @@ const createEnhancedProxy = (serviceName, targetUrl) => {
   });
 };
 
-// Service routing
-// Auth routes should NOT have authentication middleware
-app.use('/api/auth', createEnhancedProxy('auth', config.services.auth));
+// Auth Service Routes (no authentication required for login/register)
+app.use('/api/auth', createServiceProxy('auth', config.services.auth));
 
+// Comment Service Routes (require authentication)
 app.use('/api/comments', 
-  enhancedAuth.requireAuth(),
-  createEnhancedProxy('comment', config.services.comment)
+  auth.requireAuth(),
+  createServiceProxy('comment', config.services.comment)
 );
 
-// Add path rewrite middleware BEFORE the proxy
-app.use('/api/industries', (req, res, next) => {
-  // Rewrite the path from /api/industries to /api/v1/industries
-  req.url = req.url.replace('/api/industries', '/api/v1/industries');
-  next();
-}, enhancedAuth.optionalAuth(), createEnhancedProxy('industry', config.services.industry));
+// Industry Service Routes (public access)
+// Map /api/industries to /api/v1/industries on the backend
+app.use('/api/industries', 
+  createServiceProxy('industry', config.services.industry, {
+    '^/api/industries': '/api/v1/industries'
+  })
+);
 
+// NPS Service Routes (require authentication)
 app.use('/api/nps', 
-  enhancedAuth.requireAuth(),
-  createEnhancedProxy('nps', config.services.nps)
+  auth.requireAuth(),
+  createServiceProxy('nps', config.services.nps)
 );
+
+// Development endpoints for service management
+if (process.env.NODE_ENV !== 'production') {
+  app.post('/api/gateway/services/:serviceName/register', (req, res) => {
+    const { serviceName } = req.params;
+    const { serviceUrl } = req.body;
+    
+    try {
+      health.addService(serviceName, serviceUrl);
+      res.json({
+        success: true,
+        message: `Service ${serviceName} registered at ${serviceUrl}`
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'REGISTRATION_FAILED',
+          message: error.message
+        }
+      });
+    }
+  });
+
+  app.delete('/api/gateway/services/:serviceName', (req, res) => {
+    const { serviceName } = req.params;
+    
+    try {
+      health.removeService(serviceName);
+      res.json({
+        success: true,
+        message: `Service ${serviceName} unregistered`
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'UNREGISTRATION_FAILED',
+          message: error.message
+        }
+      });
+    }
+  });
+
+  app.post('/api/gateway/health-check', async (req, res) => {
+    try {
+      const healthStatus = await health.forceHealthCheck();
+      res.json({
+        success: true,
+        data: healthStatus
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'HEALTH_CHECK_FAILED',
+          message: error.message
+        }
+      });
+    }
+  });
+}
+
+// Metrics endpoint for monitoring
+app.get('/metrics', (req, res) => {
+  const stats = {
+    gateway: {
+      uptime: Math.floor(process.uptime()),
+      memory: process.memoryUsage(),
+      version: process.env.npm_package_version || '1.0.1'
+    },
+    services: health.getStats(),
+    auth: auth.getStats()
+  };
+  
+  res.set('Content-Type', 'text/plain');
+  res.send(`# Gateway Metrics
+gateway_uptime_seconds ${stats.gateway.uptime}
+gateway_memory_rss_bytes ${stats.gateway.memory.rss}
+gateway_memory_heap_used_bytes ${stats.gateway.memory.heapUsed}
+gateway_total_services ${stats.services.totalServices}
+gateway_healthy_services ${stats.services.healthyServices}
+gateway_cached_tokens ${stats.auth.cachedTokens}
+`);
+});
 
 // Static files
 app.use(express.static('public', {
   maxAge: process.env.NODE_ENV === 'production' ? '1d' : 0,
-  etag: true,
-  lastModified: true
+  etag: true
 }));
 
-// API 404 handler
+// 404 handler for API routes
 app.use('/api/*', (req, res) => {
-  logger.warn('API endpoint not found:', { path: req.path, method: req.method, requestId: req.id });
-  
   res.status(404).json({
     success: false,
     error: {
@@ -338,23 +347,26 @@ app.use('/api/*', (req, res) => {
     },
     metadata: {
       timestamp: new Date().toISOString(),
-      requestId: req.id,
+      requestId: req.requestId,
       service: 'gateway'
     }
   });
 });
 
-// SPA fallback
+// SPA fallback for frontend routes
 app.get('*', (req, res) => {
-  const indexPath = path.join(__dirname, 'public', 'index.html');
-  res.sendFile(indexPath, (err) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'), (err) => {
     if (err) {
-      logger.error('Failed to serve index.html:', { error: err.message, requestId: req.id });
       res.status(404).json({
         success: false,
         error: {
           code: 'RESOURCE_NOT_FOUND',
           message: 'The requested resource was not found'
+        },
+        metadata: {
+          timestamp: new Date().toISOString(),
+          requestId: req.requestId,
+          service: 'gateway'
         }
       });
     }
@@ -363,64 +375,56 @@ app.get('*', (req, res) => {
 
 // Global error handler
 app.use((err, req, res, next) => {
-  logger.error('Unhandled error:', { 
-    error: err.message, 
-    stack: err.stack, 
-    requestId: req.id,
-    path: req.path,
-    method: req.method
+  logger.error(`Unhandled error: ${err.message}`, {
+    requestId: req.requestId,
+    stack: err.stack
   });
   
-  if (res.headersSent) {
-    return next(err);
-  }
-  
-  const message = process.env.NODE_ENV === 'production' ? 
-    'An unexpected error occurred' : 
-    err.message;
+  if (res.headersSent) return next(err);
   
   res.status(500).json({
     success: false,
     error: {
       code: 'INTERNAL_SERVER_ERROR',
-      message,
+      message: 'An unexpected error occurred',
       suggestion: 'Please try again later'
     },
     metadata: {
       timestamp: new Date().toISOString(),
-      requestId: req.id,
+      requestId: req.requestId,
       service: 'gateway'
     }
   });
 });
 
-// Server startup
 const PORT = config.port;
 const server = app.listen(PORT, () => {
-  logger.info(`Enhanced Gateway server started:`, {
-    port: PORT,
-    environment: process.env.NODE_ENV || 'development',
-    enhancedMode: process.env.USE_ENHANCED_AUTH === 'true',
-    version: process.env.npm_package_version || '1.0.0'
-  });
+  logger.info(`Gateway started on port ${PORT}`);
+  logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  logger.info(`Services configured: ${Object.keys(config.services).join(', ')}`);
   
-  logger.systemInfo();
+  // Log service URLs for debugging
+  Object.entries(config.services).forEach(([name, url]) => {
+    logger.info(`${name} service: ${url}`);
+  });
 });
 
 // Graceful shutdown
 const gracefulShutdown = (signal) => {
   logger.info(`${signal} received, shutting down gracefully`);
   
-  server.close((err) => {
-    if (err) {
-      logger.error('Error during server shutdown:', { error: err.message });
-      process.exit(1);
-    }
+  server.close(() => {
+    logger.info('HTTP server closed');
     
-    logger.info('Gateway server closed successfully');
+    // Cleanup resources
+    health.cleanup();
+    auth.clearTokenCache();
+    
+    logger.info('Gateway shutdown complete');
     process.exit(0);
   });
   
+  // Force close after 10 seconds
   setTimeout(() => {
     logger.error('Could not close connections in time, forcefully shutting down');
     process.exit(1);
@@ -430,19 +434,14 @@ const gracefulShutdown = (signal) => {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
+// Handle uncaught exceptions
 process.on('uncaughtException', (err) => {
-  logger.error('Uncaught Exception:', { 
-    error: err.message, 
-    stack: err.stack 
-  });
+  logger.error('Uncaught Exception:', { error: err.message, stack: err.stack });
   process.exit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection:', { 
-    reason: reason instanceof Error ? reason.message : reason,
-    stack: reason instanceof Error ? reason.stack : undefined
-  });
+  logger.error('Unhandled Rejection:', { reason, promise });
   process.exit(1);
 });
 
