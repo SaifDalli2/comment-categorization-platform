@@ -298,9 +298,8 @@ const createEnhancedProxy = (serviceName, targetUrl) => {
 };
 
 // Service routing
-app.use('/api/auth', 
-  createEnhancedProxy('auth', config.services.auth)
-);
+// Auth routes should NOT have authentication middleware
+app.use('/api/auth', createEnhancedProxy('auth', config.services.auth));
 
 app.use('/api/comments', 
   enhancedAuth.requireAuth(),
