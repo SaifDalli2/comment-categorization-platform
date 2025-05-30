@@ -307,10 +307,12 @@ app.use('/api/comments',
   createEnhancedProxy('comment', config.services.comment)
 );
 
-app.use('/api/industries', 
-  enhancedAuth.optionalAuth(),
-  createEnhancedProxy('industry', config.services.industry)
-);
+// Add path rewrite middleware BEFORE the proxy
+app.use('/api/industries', (req, res, next) => {
+  // Rewrite the path from /api/industries to /api/v1/industries
+  req.url = req.url.replace('/api/industries', '/api/v1/industries');
+  next();
+}, enhancedAuth.optionalAuth(), createEnhancedProxy('industry', config.services.industry));
 
 app.use('/api/nps', 
   enhancedAuth.requireAuth(),
