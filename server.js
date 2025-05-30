@@ -1,4 +1,4 @@
-// gateway-service/server.js - Enhanced Gateway Server
+// gateway-service/server.js - Enhanced Gateway Server (Fixed)
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const cors = require('cors');
@@ -83,15 +83,22 @@ app.use('/api/comments/categorize', createRateLimit(60 * 60 * 1000, 50, 'Too man
 app.use('/api/nps/upload', createRateLimit(60 * 60 * 1000, 10, 'Too many file uploads'));
 app.use('/', createRateLimit(15 * 60 * 1000, 100, 'Too many requests'));
 
-// Enhanced request logging
+// Enhanced request logging - FIXED
 app.use((req, res, next) => {
   req.id = req.headers['x-request-id'] || `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  req.startTime = Date.now(); // Add start time to request
+  
+  // Set headers immediately when request starts
   res.setHeader('X-Request-ID', req.id);
   
-  const start = Date.now();
-  res.on('finish', () => {
-    const duration = Date.now() - start;
-    res.setHeader('X-Response-Time', `${duration}ms`);
+  const originalEnd = res.end;
+  res.end = function(...args) {
+    const duration = Date.now() - req.startTime;
+    
+    // Only set headers if they haven't been sent yet
+    if (!res.headersSent) {
+      res.setHeader('X-Response-Time', `${duration}ms`);
+    }
     
     const logData = {
       method: req.method,
@@ -106,7 +113,10 @@ app.use((req, res, next) => {
     const level = res.statusCode >= 500 ? 'error' : 
                   res.statusCode >= 400 ? 'warn' : 'info';
     logger.log(level, `${req.method} ${req.path} ${res.statusCode}`, logData);
-  });
+    
+    // Call original end method
+    originalEnd.apply(this, args);
+  };
   
   next();
 });
@@ -191,15 +201,13 @@ app.get('/api/gateway/services', enhancedAuth.optionalAuth(), async (req, res) =
   }
 });
 
-// Enhanced proxy factory
-const createEnhancedProxy = (serviceName, targetUrl, options = {}) => {
+// Enhanced proxy factory - FIXED
+const createEnhancedProxy = (serviceName, targetUrl) => {
   return createProxyMiddleware({
     target: targetUrl,
     changeOrigin: true,
     timeout: 30000,
     
-    pathRewrite: options.pathRewrite || {},
-
     onProxyReq: (proxyReq, req) => {
       if (req.user) {
         proxyReq.setHeader('X-User-ID', req.user.userId || req.user.id);
@@ -229,9 +237,11 @@ const createEnhancedProxy = (serviceName, targetUrl, options = {}) => {
     },
 
     onProxyRes: (proxyRes, req, res) => {
-      proxyRes.headers['x-served-by'] = serviceName;
-      proxyRes.headers['x-gateway-service'] = 'claude-analysis-gateway';
-      proxyRes.headers['x-response-time'] = `${Date.now() - req.startTime}ms`;
+      // Only set headers if they haven't been sent yet
+      if (!proxyRes.headersSent) {
+        proxyRes.headers['x-served-by'] = serviceName;
+        proxyRes.headers['x-gateway-service'] = 'claude-analysis-gateway';
+      }
       
       const success = proxyRes.statusCode < 400;
       health.recordServiceResponse(serviceName, success);
@@ -298,10 +308,8 @@ app.use('/api/comments',
 );
 
 app.use('/api/industries', 
-  enhancedAuth.optionalAuth(), 
-  createEnhancedProxy('industry', config.services.industry, {
-    pathRewrite: { '^/api/industries': '/api/v1/industries' }
-  })
+  enhancedAuth.optionalAuth(),
+  createEnhancedProxy('industry', config.services.industry)
 );
 
 app.use('/api/nps', 

@@ -1,4 +1,4 @@
-// gateway-service/config/simple.js - FIXED VERSION
+// gateway-service/config/simple.js - Updated for Heroku
 const dotenv = require('dotenv');
 
 // Load environment variables
@@ -8,16 +8,13 @@ const config = {
   port: parseInt(process.env.PORT) || 3000,
   
   services: {
-    // FIXED: Corrected comment service URL typo
     auth: process.env.AUTH_SERVICE_URL || 'https://auth-service-voice-0add8d339257.herokuapp.com',
-    comment: process.env.COMMENT_SERVICE_URL || 'https://comment-serivce-1d430c50b7ad.herokuapp.com', // Fixed typo
-    industry: process.env.INDUSTRY_SERVICE_URL || 'https://industry-service-voice-f7d40a18c50e.herokuapp.com',
-    // REMOVED: NPS service until it's deployed
-    // nps: process.env.NPS_SERVICE_URL || 'https://your-nps-service.herokuapp.com'
+    comment: process.env.COMMENT_SERVICE_URL || 'https://comment-serivce-1d430c50b7ad.herokuapp.com',
+    industry: process.env.INDUSTRY_SERVICE_URL || 'https://industry-service-voice-f7d40a18c50e.herokuapp.com/',
+    nps: process.env.NPS_SERVICE_URL || 'https://your-nps-service.herokuapp.com'
   },
   
   security: {
-    // IMPORTANT: This must match ALL services exactly
     jwtSecret: process.env.JWT_SECRET,
     corsOrigins: process.env.ALLOWED_ORIGINS ? 
       process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim()) : 
@@ -25,6 +22,7 @@ const config = {
         'https://gateway-service-b25f91548194.herokuapp.com',
         'https://your-frontend-app.netlify.app',
         'https://your-frontend-app.vercel.app',
+        // Add your frontend URLs here
         ...(process.env.NODE_ENV === 'development' ? ['http://localhost:3000', 'http://localhost:5173'] : [])
       ]
   },
