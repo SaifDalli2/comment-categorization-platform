@@ -1,7 +1,7 @@
 {
   "name": "gateway-service",
-  "version": "1.0.1",
-  "description": "Enhanced API Gateway for Comment Categorization Microservices",
+  "version": "1.1.0",
+  "description": "Enhanced API Gateway with Analytics Service Integration",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -9,27 +9,21 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "test:ci": "jest --ci --coverage --watchAll=false",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "validate": "npm run lint && npm run test",
     "health-check": "node healthcheck.js",
-    "docker:build": "docker build -t gateway-service .",
-    "security:audit": "npm audit",
-    "clean": "rm -rf node_modules coverage",
-    "debug:config": "node -e \"console.log(JSON.stringify(require('./config/simple'), null, 2))\"",
-    "debug:services": "node -e \"require('./config/simple').discoverServices().then(console.log)\"",
-    "heroku:logs": "heroku logs --tail --app $(heroku apps --json | jq -r '.[] | select(.name | contains(\"gateway\")) | .name')",
-    "heroku:config": "heroku config --app $(heroku apps --json | jq -r '.[] | select(.name | contains(\"gateway\")) | .name')"
+    "sync:check": "node scripts/check-sync.js",
+    "analytics:test": "node scripts/test-analytics.js"
   },
   "keywords": [
     "api-gateway",
     "microservices",
-    "comment-categorization",
-    "proxy",
-    "service-discovery"
+    "analytics",
+    "event-driven",
+    "voice-platform"
   ],
-  "author": "Your Team",
+  "author": "Voice Platform Team",
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
@@ -39,7 +33,10 @@
     "helmet": "^6.1.5",
     "jsonwebtoken": "^9.0.0",
     "axios": "^1.4.0",
-    "dotenv": "^16.0.3"
+    "dotenv": "^16.0.3",
+    "redis": "^4.6.0",
+    "uuid": "^9.0.0",
+    "natural": "^6.5.0"
   },
   "devDependencies": {
     "nodemon": "^2.0.22",
@@ -50,29 +47,5 @@
   "engines": {
     "node": ">=16.0.0",
     "npm": ">=8.0.0"
-  },
-  "jest": {
-    "testEnvironment": "node",
-    "collectCoverageFrom": [
-      "middleware/**/*.js",
-      "services/**/*.js", 
-      "utils/**/*.js",
-      "config/**/*.js",
-      "server.js",
-      "!**/node_modules/**",
-      "!**/coverage/**",
-      "!**/*.test.js"
-    ],
-    "coverageThreshold": {
-      "global": {
-        "branches": 70,
-        "functions": 70,
-        "lines": 70,
-        "statements": 70
-      }
-    },
-    "testMatch": [
-      "<rootDir>/tests/**/*.test.js"
-    ]
   }
 }
