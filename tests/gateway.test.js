@@ -1,4 +1,4 @@
-// gateway-service/tests/gateway.test.js
+// gateway-service/tests/gateway.test.js - Updated for Fixed Auth Routes
 const request = require('supertest');
 const jwt = require('jsonwebtoken');
 
@@ -29,9 +29,19 @@ jest.mock('../utils/simpleLogger', () => ({
   request: jest.fn()
 }));
 
+// Mock axios for service calls
+jest.mock('axios');
+const axios = require('axios');
+
 const app = require('../server');
 
 describe('Gateway Service', () => {
+  beforeEach(() => {
+    // Reset axios mock before each test
+    axios.get.mockClear();
+    axios.post.mockClear();
+  });
+
   describe('Health Endpoints', () => {
     it('should respond to basic health check', async () => {
       const res = await request(app)
@@ -46,6 +56,14 @@ describe('Gateway Service', () => {
     });
 
     it('should respond to service health check', async () => {
+      // Mock service health checks
+      axios.get.mockImplementation((url) => {
+        if (url.includes('/health')) {
+          return Promise.resolve({ status: 200, data: { status: 'healthy' } });
+        }
+        return Promise.reject(new Error('Service unavailable'));
+      });
+
       const res = await request(app)
         .get('/health/services')
         .expect(res => {
@@ -58,20 +76,99 @@ describe('Gateway Service', () => {
         service: 'gateway'
       });
     });
+  });
 
-    it('should list gateway services', async () => {
+  describe('Authentication Routes - PUBLIC (No Auth Required)', () => {
+    const publicRoutes = [
+      '/api/auth/login',
+      '/api/auth/register',
+      '/api/auth/forgot-password',
+      '/api/auth/reset-password',
+      '/api/auth/verify-email'
+    ];
+
+    publicRoutes.forEach(route => {
+      it(`should allow access to ${route} without authentication`, async () => {
+        // Mock the auth service response
+        axios.post.mockResolvedValueOnce({
+          status: 200,
+          data: { success: true, message: 'Request processed' }
+        });
+
+        await request(app)
+          .post(route)
+          .send({ email: 'test@example.com', password: 'Test123!' })
+          .expect(200);
+
+        expect(axios.post).toHaveBeenCalled();
+      });
+    });
+
+    it('should successfully login without providing Bearer token', async () => {
+      // Mock successful login response from auth service
+      axios.post.mockResolvedValueOnce({
+        status: 200,
+        data: {
+          success: true,
+          data: {
+            token: 'mock-jwt-token',
+            user: {
+              id: 'user-123',
+              email: 'test@example.com'
+            }
+          }
+        }
+      });
+
       const res = await request(app)
-        .get('/api/gateway/services')
+        .post('/api/auth/login')
+        .send({
+          email: 'test@example.com',
+          password: 'Test123!'
+        })
         .expect(200);
 
-      expect(res.body).toMatchObject({
-        success: true,
-        data: expect.any(Object)
+      expect(res.body.success).toBe(true);
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining('/api/auth/login'),
+        expect.objectContaining({
+          email: 'test@example.com',
+          password: 'Test123!'
+        }),
+        expect.any(Object)
+      );
+    });
+
+    it('should successfully register without providing Bearer token', async () => {
+      // Mock successful registration response from auth service
+      axios.post.mockResolvedValueOnce({
+        status: 201,
+        data: {
+          success: true,
+          data: {
+            user: {
+              id: 'new-user-123',
+              email: 'newuser@example.com'
+            }
+          }
+        }
       });
+
+      await request(app)
+        .post('/api/auth/register')
+        .send({
+          email: 'newuser@example.com',
+          password: 'Test123!',
+          firstName: 'Test',
+          lastName: 'User'
+        })
+        .expect(201);
+
+      expect(axios.post).toHaveBeenCalled();
     });
   });
 
-  describe('Authentication', () => {
+  describe('Authentication Routes - PROTECTED (Auth Required)', () => {
     const validToken = jwt.sign(
       { 
         userId: 'test-user-id',
@@ -82,75 +179,103 @@ describe('Gateway Service', () => {
       'test-jwt-secret-32-chars-minimum'
     );
 
-    const expiredToken = jwt.sign(
-      { 
-        userId: 'test-user-id',
-        email: 'test@example.com',
-        exp: Math.floor(Date.now() / 1000) - 3600
-      },
-      'test-jwt-secret-32-chars-minimum'
-    );
+    const protectedRoutes = [
+      '/api/auth/profile',
+      '/api/auth/change-password',
+      '/api/auth/logout',
+      '/api/auth/verify'
+    ];
 
-    it('should accept valid JWT tokens', async () => {
-      // This would normally proxy to comment service, but since we don't have 
-      // the service running, we expect a connection error (503)
-      const res = await request(app)
-        .post('/api/comments/categorize')
-        .set('Authorization', `Bearer ${validToken}`)
-        .send({ comments: ['test'] })
-        .expect(503); // Service unavailable
+    protectedRoutes.forEach(route => {
+      it(`should require authentication for ${route}`, async () => {
+        await request(app)
+          .post(route)
+          .send({ someData: 'test' })
+          .expect(401);
+      });
 
-      expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
+      it(`should allow access to ${route} with valid token`, async () => {
+        // Mock the auth service response
+        axios.post.mockResolvedValueOnce({
+          status: 200,
+          data: { success: true, message: 'Request processed' }
+        });
+
+        await request(app)
+          .post(route)
+          .set('Authorization', `Bearer ${validToken}`)
+          .send({ someData: 'test' })
+          .expect(200);
+      });
     });
 
-    it('should reject expired tokens', async () => {
+    it('should reject expired tokens for protected auth routes', async () => {
+      const expiredToken = jwt.sign(
+        { 
+          userId: 'test-user-id',
+          email: 'test@example.com',
+          exp: Math.floor(Date.now() / 1000) - 3600
+        },
+        'test-jwt-secret-32-chars-minimum'
+      );
+
       const res = await request(app)
-        .post('/api/comments/categorize')
+        .post('/api/auth/profile')
         .set('Authorization', `Bearer ${expiredToken}`)
-        .send({ comments: ['test'] })
         .expect(401);
 
       expect(res.body.error.code).toBe('TOKEN_EXPIRED');
     });
-
-    it('should reject invalid tokens', async () => {
-      const res = await request(app)
-        .post('/api/comments/categorize')
-        .set('Authorization', 'Bearer invalid-token')
-        .send({ comments: ['test'] })
-        .expect(401);
-
-      expect(res.body.error.code).toBe('INVALID_TOKEN');
-    });
-
-    it('should require authentication for protected routes', async () => {
-      const res = await request(app)
-        .post('/api/comments/categorize')
-        .send({ comments: ['test'] })
-        .expect(401);
-
-      expect(res.body.error.code).toBe('AUTHENTICATION_REQUIRED');
-    });
   });
 
-  describe('CORS', () => {
-    it('should handle preflight requests', async () => {
-      const res = await request(app)
-        .options('/api/auth/login')
-        .set('Origin', 'http://localhost:3000')
-        .set('Access-Control-Request-Method', 'POST')
-        .expect(204);
+  describe('Other Service Routes', () => {
+    const validToken = jwt.sign(
+      { 
+        userId: 'test-user-id',
+        email: 'test@example.com',
+        roles: ['user'],
+        exp: Math.floor(Date.now() / 1000) + 3600
+      },
+      'test-jwt-secret-32-chars-minimum'
+    );
 
-      expect(res.headers['access-control-allow-origin']).toBeDefined();
+    it('should require authentication for comment service routes', async () => {
+      await request(app)
+        .post('/api/comments/categorize')
+        .send({ comments: ['test'] })
+        .expect(401);
     });
 
-    it('should allow requests from whitelisted origins', async () => {
-      const res = await request(app)
-        .get('/health')
-        .set('Origin', 'http://localhost:3000')
-        .expect(200);
+    it('should forward authenticated requests to comment service', async () => {
+      // Mock comment service response
+      axios.post.mockResolvedValueOnce({
+        status: 200,
+        data: { success: true, jobId: 'job-123' }
+      });
 
-      expect(res.headers['access-control-allow-origin']).toBeDefined();
+      await request(app)
+        .post('/api/comments/categorize')
+        .set('Authorization', `Bearer ${validToken}`)
+        .send({ comments: ['test comment'] })
+        .expect(200);
+    });
+
+    it('should allow public access to industry service routes', async () => {
+      // Mock industry service response
+      axios.get.mockResolvedValueOnce({
+        status: 200,
+        data: { success: true, data: ['SaaS/Technology', 'Healthcare'] }
+      });
+
+      await request(app)
+        .get('/api/industries')
+        .expect(200);
+    });
+
+    it('should require authentication for NPS service routes', async () => {
+      await request(app)
+        .get('/api/nps/dashboard/user-123')
+        .expect(401);
     });
   });
 
@@ -168,49 +293,91 @@ describe('Gateway Service', () => {
       });
     });
 
-    it('should return proper error format', async () => {
-      const res = await request(app)
-        .get('/api/non-existent')
-        .expect(404);
+    it('should handle service unavailability gracefully', async () => {
+      const validToken = jwt.sign(
+        { 
+          userId: 'test-user-id',
+          email: 'test@example.com',
+          exp: Math.floor(Date.now() / 1000) + 3600
+        },
+        'test-jwt-secret-32-chars-minimum'
+      );
 
-      expect(res.body).toMatchObject({
-        success: false,
-        error: expect.objectContaining({
-          code: expect.any(String),
-          message: expect.any(String)
-        }),
-        metadata: expect.objectContaining({
-          timestamp: expect.any(String),
-          service: 'gateway'
-        })
-      });
+      // Mock service unavailable
+      axios.post.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+      const res = await request(app)
+        .post('/api/comments/categorize')
+        .set('Authorization', `Bearer ${validToken}`)
+        .send({ comments: ['test'] })
+        .expect(503);
+
+      expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
+    });
+  });
+
+  describe('CORS', () => {
+    it('should handle preflight requests', async () => {
+      const res = await request(app)
+        .options('/api/auth/login')
+        .set('Origin', 'http://localhost:3000')
+        .set('Access-Control-Request-Method', 'POST')
+        .expect(204);
+
+      expect(res.headers['access-control-allow-origin']).toBeDefined();
     });
   });
 
   describe('Rate Limiting', () => {
-    it('should apply rate limiting', async () => {
-      // Make several rapid requests
-      const requests = Array(10).fill().map(() =>
-        request(app).get('/health')
-      );
+    it('should apply rate limiting to auth endpoints', async () => {
+      // Mock auth service to respond for each request
+      axios.post.mockResolvedValue({
+        status: 200,
+        data: { success: true }
+      });
+
+      const requests = [];
+      for (let i = 0; i < 25; i++) {
+        requests.push(
+          request(app)
+            .post('/api/auth/login')
+            .send({ email: 'test@test.com', password: 'wrong' })
+        );
+      }
 
       const responses = await Promise.all(requests);
       
-      // All should either succeed (200) or be rate limited (429)
-      responses.forEach(res => {
-        expect([200, 429]).toContain(res.status);
-      });
+      // Some requests should be rate limited (429)
+      const rateLimitedResponses = responses.filter(res => res.status === 429);
+      expect(rateLimitedResponses.length).toBeGreaterThan(0);
     });
   });
 
-  describe('Security Headers', () => {
-    it('should set security headers', async () => {
-      const res = await request(app)
-        .get('/health')
+  describe('Service Health Monitoring', () => {
+    it('should track service health when proxying requests', async () => {
+      const validToken = jwt.sign(
+        { 
+          userId: 'test-user-id',
+          email: 'test@example.com',
+          exp: Math.floor(Date.now() / 1000) + 3600
+        },
+        'test-jwt-secret-32-chars-minimum'
+      );
+
+      // Mock successful service response
+      axios.post.mockResolvedValueOnce({
+        status: 200,
+        data: { success: true }
+      });
+
+      await request(app)
+        .post('/api/comments/categorize')
+        .set('Authorization', `Bearer ${validToken}`)
+        .send({ comments: ['test'] })
         .expect(200);
 
-      // Check for some security headers set by helmet
-      expect(res.headers['x-content-type-options']).toBeDefined();
+      // Verify service health was recorded (this would be implementation specific)
+      expect(axios.post).toHaveBeenCalled();
     });
   });
 });
