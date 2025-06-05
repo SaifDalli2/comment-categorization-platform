@@ -299,6 +299,11 @@ class HealthDiagnostics {
         case 'analytics':
           diagnostics.serviceSpecific = await this.checkAnalyticsServiceSpecifics(serviceUrl);
           break;
+        case 'nps':
+          // Legacy support - redirect to analytics
+          diagnostics.serviceSpecific = await this.checkAnalyticsServiceSpecifics(serviceUrl);
+          diagnostics.serviceSpecific.note = 'NPS service has been renamed to Analytics service';
+          break;
         default:
           diagnostics.serviceSpecific.note = 'No specific checks defined for this service';
       }
@@ -381,18 +386,31 @@ class HealthDiagnostics {
       // Check if analytics endpoints exist
       const eventsResponse = await axios.post(`${serviceUrl}/api/analytics/events`, {}, {
         timeout: 3000,
+        validateStatus: () => true,
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+
+      // Check analytics dashboard endpoint
+      const dashboardResponse = await axios.get(`${serviceUrl}/api/analytics/comments/engagement`, {
+        timeout: 3000,
         validateStatus: () => true
       });
 
       return {
         eventsEndpoint: eventsResponse.status !== 404,
-        conditionalCompliance: 'pending UUID migration',
-        expectedFeatures: ['event collection', 'real-time processing', 'PostgreSQL + Redis']
+        dashboardEndpoint: dashboardResponse.status !== 404,
+        conditionalCompliance: 'pending UUID migration - see shared knowledge',
+        expectedFeatures: ['event collection', 'real-time processing', 'PostgreSQL + Redis', 'comment analytics', 'GDPR compliance'],
+        serviceType: 'analytics (formerly NPS)',
+        sharedKnowledgeStatus: 'documented in contracts/analytics/'
       };
     } catch (error) {
       return {
         error: `Analytics service check failed: ${error.message}`,
-        eventsEndpoint: false
+        eventsEndpoint: false,
+        dashboardEndpoint: false
       };
     }
   }

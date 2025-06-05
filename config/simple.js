@@ -15,13 +15,19 @@ const validateServiceUrl = (serviceName, url) => {
 };
 
 // Build service configuration with validation
+// Update the buildServiceConfig function:
 const buildServiceConfig = () => {
   const services = {
     auth: process.env.AUTH_SERVICE_URL || 'https://your-auth-service.herokuapp.com',
     comment: process.env.COMMENT_SERVICE_URL || 'https://your-comment-service.herokuapp.com',
     industry: process.env.INDUSTRY_SERVICE_URL || 'https://your-industry-service.herokuapp.com',
-    nps: process.env.NPS_SERVICE_URL || 'https://your-nps-service.herokuapp.com'
+    analytics: process.env.ANALYTICS_SERVICE_URL || process.env.NPS_SERVICE_URL || 'https://analytics-service-voice-cd4ea7dc5810.herokuapp.com'
   };
+
+  if (process.env.NPS_SERVICE_URL && !process.env.ANALYTICS_SERVICE_URL) {
+    console.warn('⚠️  NPS_SERVICE_URL detected - please migrate to ANALYTICS_SERVICE_URL');
+    console.warn('   Set: ANALYTICS_SERVICE_URL=' + process.env.NPS_SERVICE_URL);
+  }
 
   // Validate service URLs
   Object.entries(services).forEach(([name, url]) => {

@@ -493,10 +493,28 @@ app.use('/api/industries',
   })
 );
 
-// NPS Service Routes (require authentication)
+app.use('/api/analytics', 
+  auth.requireAuth(),
+  createServiceProxy('analytics', config.services.analytics)
+);
+
+// Legacy NPS routes - redirect to analytics
 app.use('/api/nps', 
   auth.requireAuth(),
-  createServiceProxy('nps', config.services.nps)
+  (req, res, next) => {
+    // Log legacy usage
+    logger.warn('Legacy NPS endpoint accessed - please migrate to /api/analytics', {
+      path: req.path,
+      method: req.method,
+      userAgent: req.get('User-Agent'),
+      ip: req.ip
+    });
+    
+    // Redirect to analytics service
+    req.url = req.url.replace('/api/nps', '/api/analytics');
+    next();
+  },
+  createServiceProxy('analytics', config.services.analytics)
 );
 
 // Development endpoints for service management
