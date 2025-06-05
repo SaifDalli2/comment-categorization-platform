@@ -14,6 +14,231 @@ const app = express();
 const auth = new SimpleAuth();
 const health = new SimpleHealth();
 
+// ...existing code...
+
+app.get('/api/gateway/services', auth.optionalAuth(), (req, res) => {
+  const services = health.getServiceStatus();
+  res.json({
+    success: true,
+    data: services,
+    metadata: {
+      timestamp: new Date().toISOString(),
+      requestId: req.requestId,
+      service: 'gateway'
+    }
+  });
+});
+
+// Add this to your server.js file after existing health endpoints
+
+const HealthDiagnostics = require('./services/HealthDiagnostics');
+
+// Initialize health diagnostics service
+const healthDiagnostics = new HealthDiagnostics();
+
+// Enhanced health diagnostics endpoint
+app.get('/health/diagnostics', healthDiagnostics.healthDiagnosticsEndpoint());
+
+// Quick health summary endpoint (lighter version)
+app.get('/health/summary', async (req, res) => {
+  try {
+    const quickCheck = await healthDiagnostics.performCompleteHealthCheck();
+    
+    res.json({
+      success: true,
+      data: {
+        overallStatus: quickCheck.summary.overallStatus,
+        gatewayStatus: quickCheck.gateway.status,
+        healthScore: quickCheck.summary.healthPercentage,
+        servicesStatus: Object.fromEntries(
+          Object.entries(quickCheck.services).map(([name, service]) => [
+            name, 
+            { 
+              status: service.status, 
+              responseTime: service.responseTime,
+              url: service.url
+            }
+          ])
+        ),
+        summary: quickCheck.summary,
+        checkTime: quickCheck.performance.totalCheckTime,
+        timestamp: quickCheck.timestamp
+      },
+      metadata: {
+        timestamp: new Date().toISOString(),
+        service: 'gateway',
+        requestId: req.requestId
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'HEALTH_SUMMARY_FAILED',
+        message: 'Health summary check failed'
+      },
+      metadata: {
+        timestamp: new Date().toISOString(),
+        service: 'gateway',
+        requestId: req.requestId
+      }
+    });
+  }
+});
+
+// Health status for monitoring systems (Prometheus/Grafana compatible)
+app.get('/health/metrics', async (req, res) => {
+  try {
+    const healthCheck = await healthDiagnostics.performCompleteHealthCheck();
+    
+    // Generate Prometheus-style metrics
+    const metrics = [];
+    
+    // Gateway metrics
+    metrics.push(`# HELP gateway_up Gateway service availability`);
+    metrics.push(`# TYPE gateway_up gauge`);
+    metrics.push(`gateway_up{service="gateway"} ${healthCheck.gateway.status === 'healthy' ? 1 : 0}`);
+    
+    metrics.push(`# HELP gateway_uptime_seconds Gateway uptime in seconds`);
+    metrics.push(`# TYPE gateway_uptime_seconds counter`);
+    metrics.push(`gateway_uptime_seconds{service="gateway"} ${healthCheck.gateway.uptime}`);
+    
+    metrics.push(`# HELP gateway_response_time_ms Gateway response time in milliseconds`);
+    metrics.push(`# TYPE gateway_response_time_ms gauge`);
+    metrics.push(`gateway_response_time_ms{service="gateway"} ${healthCheck.gateway.responseTime}`);
+    
+    // Service metrics
+    metrics.push(`# HELP service_up Service availability`);
+    metrics.push(`# TYPE service_up gauge`);
+    
+    metrics.push(`# HELP service_response_time_ms Service response time in milliseconds`);
+    metrics.push(`# TYPE service_response_time_ms gauge`);
+    
+    Object.entries(healthCheck.services).forEach(([serviceName, service]) => {
+      const isUp = service.status === 'healthy' ? 1 : 0;
+      metrics.push(`service_up{service="${serviceName}",url="${service.url}"} ${isUp}`);
+      metrics.push(`service_response_time_ms{service="${serviceName}"} ${service.responseTime}`);
+    });
+    
+    // Overall system metrics
+    metrics.push(`# HELP system_health_percentage Overall system health percentage`);
+    metrics.push(`# TYPE system_health_percentage gauge`);
+    metrics.push(`system_health_percentage ${healthCheck.summary.healthPercentage}`);
+    
+    metrics.push(`# HELP services_total Total number of services`);
+    metrics.push(`# TYPE services_total gauge`);
+    metrics.push(`services_total ${healthCheck.summary.totalServices}`);
+    
+    metrics.push(`# HELP services_healthy Number of healthy services`);
+    metrics.push(`# TYPE services_healthy gauge`);
+    metrics.push(`services_healthy ${healthCheck.summary.healthyServices}`);
+    
+    res.set('Content-Type', 'text/plain');
+    res.send(metrics.join('\n') + '\n');
+    
+  } catch (error) {
+    res.status(500).send('# Health metrics collection failed\n');
+  }
+});
+
+// Health check history endpoint
+app.get('/health/history', (req, res) => {
+  try {
+    const history = healthDiagnostics.getHealthHistory();
+    const trends = healthDiagnostics.getHealthTrends();
+    
+    res.json({
+      success: true,
+      data: {
+        history,
+        trends,
+        totalChecks: history.length
+      },
+      metadata: {
+        timestamp: new Date().toISOString(),
+        service: 'gateway',
+        requestId: req.requestId
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'HEALTH_HISTORY_FAILED',
+        message: 'Failed to retrieve health history'
+      },
+      metadata: {
+        timestamp: new Date().toISOString(),
+        service: 'gateway',
+        requestId: req.requestId
+      }
+    });
+  }
+});
+
+// Force health check endpoint (for admin use)
+app.post('/health/check', auth.optionalAuth(), async (req, res) => {
+  try {
+    // Optional: Add admin check if needed
+    // if (req.user && !req.user.roles.includes('admin')) {
+    //   return res.status(403).json({ error: 'Admin access required' });
+    // }
+    
+    const healthCheck = await healthDiagnostics.performCompleteHealthCheck();
+    
+    res.json({
+      success: true,
+      data: healthCheck,
+      metadata: {
+        timestamp: new Date().toISOString(),
+        service: 'gateway',
+        requestId: req.requestId,
+        triggeredBy: req.user ? req.user.email : 'anonymous'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'FORCED_HEALTH_CHECK_FAILED',
+        message: 'Forced health check failed'
+      },
+      metadata: {
+        timestamp: new Date().toISOString(),
+        service: 'gateway',
+        requestId: req.requestId
+      }
+    });
+  }
+});
+
+// ...existing code continues...
+// When shutting down, add healthDiagnostics cleanup if needed:
+const gracefulShutdown = (signal) => {
+  logger.info(`${signal} received, shutting down gracefully`);
+  
+  server.close(() => {
+    logger.info('HTTP server closed');
+    
+    // Cleanup resources
+    health.cleanup();
+    auth.clearTokenCache();
+    if (typeof healthDiagnostics.cleanup === 'function') {
+      healthDiagnostics.cleanup();
+    }
+    
+    logger.info('Gateway shutdown complete');
+    process.exit(0);
+  });
+  
+  // Force close after 10 seconds
+  setTimeout(() => {
+    logger.error('Could not close connections in time, forcefully shutting down');
+    process.exit(1);
+  }, 10000);
+};
+// ...existing code...
+
 // Trust proxy for Heroku
 app.set('trust proxy', 1);
 
@@ -443,27 +668,8 @@ const server = app.listen(PORT, () => {
   logger.info('  Protected: /api/auth/profile, /api/auth/change-password, /api/auth/logout, /api/auth/verify');
 });
 
-// Graceful shutdown
-const gracefulShutdown = (signal) => {
-  logger.info(`${signal} received, shutting down gracefully`);
-  
-  server.close(() => {
-    logger.info('HTTP server closed');
-    
-    // Cleanup resources
-    health.cleanup();
-    auth.clearTokenCache();
-    
-    logger.info('Gateway shutdown complete');
-    process.exit(0);
-  });
-  
-  // Force close after 10 seconds
-  setTimeout(() => {
-    logger.error('Could not close connections in time, forcefully shutting down');
-    process.exit(1);
-  }, 10000);
-};
+
+
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
